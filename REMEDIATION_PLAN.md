@@ -146,7 +146,7 @@ Acceptance criteria:
 - Integration-style tests exercise real fetch/verify/extract path.
 - No external service dependency.
 
-[ ] R15 - Add missing scenario tests from spec
+[x] R15 - Add missing scenario tests from spec
 Scope: `internal/deploy/deploy_test.go`, `internal/status/status_test.go`, `cmd/svc-deploy/*_test.go`
 Changes:
 - Add tests for:
