@@ -138,9 +138,8 @@ func (sc ServiceConfig) Validate(name string) error {
 	if sc.SystemdUnit == "" {
 		return fmt.Errorf("service %q: systemd_unit is required", name)
 	}
-	if sc.KeepReleases < 1 {
-		return fmt.Errorf("service %q: keep_releases must be at least 1", name)
-	}
+	// Note: KeepReleases is validated after defaults are applied, so 0 here
+	// just means "use default" and will be set to DefaultKeepReleases
 	return nil
 }
 

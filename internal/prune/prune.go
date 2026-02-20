@@ -65,10 +65,9 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 		return nil, fmt.Errorf("listing releases: %w", err)
 	}
 
-	// Collect releases with their modification times for sorting
+	// Collect all release versions
 	type releaseInfo struct {
 		version string
-		modTime int64 // We'll use alphabetical for now, or parse from metadata if available
 	}
 
 	var releases []releaseInfo
@@ -76,37 +75,39 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 		if !entry.IsDir {
 			continue
 		}
-		if protected[entry.Name] {
-			continue
-		}
 		releases = append(releases, releaseInfo{version: entry.Name})
 	}
 
-	// Sort by version (semantic versioning sort)
+	// Sort by version (descending - newest first)
 	sort.Slice(releases, func(i, j int) bool {
 		return compareVersions(releases[i].version, releases[j].version) > 0
 	})
 
-	// Keep only the most recent N
-	result := &Result{
-		Removed:   []string{},
-		Remaining: len(protected),
-	}
-
 	toKeep := op.keep
+	if toKeep < 1 {
+		toKeep = op.cfg.KeepReleases
+	}
 	if toKeep < 1 {
 		toKeep = config.DefaultKeepReleases
 	}
 
-	// Add protected releases to the keep count
-	effectiveKeep := toKeep - len(protected)
-	if effectiveKeep < 0 {
-		effectiveKeep = 0
+	result := &Result{
+		Removed: []string{},
 	}
 
-	for i, rel := range releases {
-		if i < effectiveKeep {
-			result.Remaining++
+	// Count how many we're keeping (protected + most recent non-protected)
+	kept := 0
+
+	for _, rel := range releases {
+		if protected[rel.version] {
+			// Always keep protected releases
+			kept++
+			continue
+		}
+
+		if kept < toKeep {
+			// Keep this release
+			kept++
 		} else {
 			// Remove this release
 			releasePath := filepath.Join(releasesPath, rel.version)
@@ -118,7 +119,7 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 		}
 	}
 
-	result.Remaining += len(releases) - len(result.Removed)
+	result.Remaining = kept
 
 	return result, nil
 }

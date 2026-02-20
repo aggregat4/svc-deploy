@@ -3,11 +3,9 @@ package deploy
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"path/filepath"
 	"strings"
 	"text/template"
@@ -182,42 +180,39 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 }
 
 func (op *Operation) buildArtifactURL() (string, error) {
-	tmpl, err := template.New("url").Parse(op.cfg.ReleaseURLTemplate)
-	if err != nil {
-		return "", err
-	}
-
-	var buf bytes.Buffer
+	// Build data for template substitution
 	data := struct {
-		Version string
-		Service string
+		Version  string
+		Service  string
+		Artifact string
 	}{
 		Version: op.version,
 		Service: op.service,
 	}
 
+	// First render the artifact filename template
+	artifactTmpl, err := template.New("artifact").Parse(op.cfg.ArtifactFilenameTemplate)
+	if err != nil {
+		return "", fmt.Errorf("parsing artifact filename template: %w", err)
+	}
+	var artifactBuf bytes.Buffer
+	if err := artifactTmpl.Execute(&artifactBuf, data); err != nil {
+		return "", fmt.Errorf("executing artifact filename template: %w", err)
+	}
+	data.Artifact = artifactBuf.String()
+
+	// Now render the full URL template
+	tmpl, err := template.New("url").Parse(op.cfg.ReleaseURLTemplate)
+	if err != nil {
+		return "", fmt.Errorf("parsing URL template: %w", err)
+	}
+
+	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		return "", err
+		return "", fmt.Errorf("executing URL template: %w", err)
 	}
 
-	url := buf.String()
-
-	// Add artifact filename if not already included
-	if !strings.Contains(url, op.cfg.ArtifactFilenameTemplate) {
-		artifactTmpl, err := template.New("artifact").Parse(op.cfg.ArtifactFilenameTemplate)
-		if err != nil {
-			return "", err
-		}
-
-		var artifactBuf bytes.Buffer
-		if err := artifactTmpl.Execute(&artifactBuf, data); err != nil {
-			return "", err
-		}
-
-		url = strings.TrimSuffix(url, "/") + "/" + artifactBuf.String()
-	}
-
-	return url, nil
+	return buf.String(), nil
 }
 
 func (op *Operation) buildChecksumURL() (string, error) {
