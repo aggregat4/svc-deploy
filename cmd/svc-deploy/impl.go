@@ -142,8 +142,18 @@ func (fs *RealFS) CreateCompressedBackup(src, dst string) error {
 	})
 }
 
+// ExtractTar extracts a .tar.gz archive to the destination directory.
+// It handles gzip decompression and includes security protections against
+// path traversal attacks and unsafe symlinks.
 func (fs *RealFS) ExtractTar(r io.Reader, dst string) error {
-	tr := tar.NewReader(r)
+	// Decompress gzip first
+	gzReader, err := gzip.NewReader(r)
+	if err != nil {
+		return fmt.Errorf("decompressing gzip: %w", err)
+	}
+	defer func() { _ = gzReader.Close() }()
+
+	tr := tar.NewReader(gzReader)
 
 	for {
 		hdr, err := tr.Next()
@@ -151,7 +161,12 @@ func (fs *RealFS) ExtractTar(r io.Reader, dst string) error {
 			break
 		}
 		if err != nil {
-			return err
+			return fmt.Errorf("reading tar header: %w", err)
+		}
+
+		// Security: Validate path to prevent directory traversal
+		if err := validateTarPath(hdr.Name); err != nil {
+			return fmt.Errorf("invalid tar entry %q: %w", hdr.Name, err)
 		}
 
 		target := filepath.Join(dst, hdr.Name)
@@ -159,26 +174,67 @@ func (fs *RealFS) ExtractTar(r io.Reader, dst string) error {
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, os.FileMode(hdr.Mode)); err != nil {
-				return err
+				return fmt.Errorf("creating directory %q: %w", target, err)
 			}
+
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-				return err
+				return fmt.Errorf("creating parent dir for %q: %w", target, err)
 			}
 			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
 			if err != nil {
-				return err
+				return fmt.Errorf("creating file %q: %w", target, err)
 			}
 			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
-				return err
+				_ = f.Close()
+				return fmt.Errorf("writing file %q: %w", target, err)
 			}
-			f.Close()
+			_ = f.Close()
+
 		case tar.TypeSymlink:
+			// Security: Validate symlink target doesn't escape destination
+			if err := validateSymlinkTarget(dst, hdr.Name, hdr.Linkname); err != nil {
+				return fmt.Errorf("invalid symlink %q -> %q: %w", hdr.Name, hdr.Linkname, err)
+			}
 			if err := os.Symlink(hdr.Linkname, target); err != nil {
-				return err
+				return fmt.Errorf("creating symlink %q: %w", target, err)
 			}
 		}
+	}
+
+	return nil
+}
+
+// validateTarPath checks that a tar entry path is safe (no traversal, no absolute paths).
+func validateTarPath(name string) error {
+	// Reject absolute paths
+	if filepath.IsAbs(name) {
+		return fmt.Errorf("absolute paths not allowed")
+	}
+
+	// Clean the path and check for traversal attempts
+	clean := filepath.Clean(name)
+	if strings.HasPrefix(clean, "..") || strings.Contains(clean, "../") {
+		return fmt.Errorf("path traversal attempt detected")
+	}
+
+	return nil
+}
+
+// validateSymlinkTarget checks that a symlink target doesn't escape the destination directory.
+func validateSymlinkTarget(dstDir, linkPath, target string) error {
+	// Reject absolute symlink targets
+	if filepath.IsAbs(target) {
+		return fmt.Errorf("absolute symlink targets not allowed")
+	}
+
+	// Check if the resolved path would escape the destination
+	linkDir := filepath.Dir(linkPath)
+	resolved := filepath.Join(linkDir, target)
+	resolved = filepath.Clean(resolved)
+
+	if strings.HasPrefix(resolved, "..") || strings.Contains(resolved, "../") {
+		return fmt.Errorf("symlink target escapes destination")
 	}
 
 	return nil
@@ -264,7 +320,10 @@ func (f *HTTPArtifactFetcher) Fetch(ctx context.Context, url string, checksumURL
 		return nil, "", fmt.Errorf("reading checksum: %w", err)
 	}
 
-	expectedChecksum := strings.Fields(string(checksumData))[0]
+	expectedChecksum, err := parseChecksumFile(string(checksumData))
+	if err != nil {
+		return nil, "", fmt.Errorf("parsing checksum: %w", err)
+	}
 
 	// Fetch artifact
 	artifactReq, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -297,6 +356,38 @@ func (f *HTTPArtifactFetcher) Fetch(ctx context.Context, url string, checksumURL
 	}
 
 	return io.NopCloser(strings.NewReader(string(data))), actualChecksum, nil
+}
+
+// parseChecksumFile parses a checksum file content and returns the checksum.
+// Handles formats like:
+//   - "<checksum>  <filename>" (GNU coreutils format)
+//   - "<checksum>" (just the hash)
+func parseChecksumFile(content string) (string, error) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return "", fmt.Errorf("empty checksum file")
+	}
+
+	// Split by whitespace and take first field
+	fields := strings.Fields(content)
+	if len(fields) == 0 {
+		return "", fmt.Errorf("empty checksum file")
+	}
+
+	checksum := fields[0]
+
+	// Validate checksum looks like a hex string
+	if len(checksum) != 64 { // SHA256 is 64 hex chars
+		return "", fmt.Errorf("invalid checksum length: expected 64, got %d", len(checksum))
+	}
+
+	for _, c := range checksum {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return "", fmt.Errorf("invalid checksum format: non-hex character")
+		}
+	}
+
+	return strings.ToLower(checksum), nil
 }
 
 // FileLocker implements interfaces.Locker using file-based locking.

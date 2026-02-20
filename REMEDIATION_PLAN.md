@@ -6,7 +6,7 @@ How to use: mark each checkbox when complete. Each item has explicit acceptance 
 
 ## P0 - Blockers
 
-[ ] R1 - Fix CLI argument parsing hang and command/flag routing
+[x] R1 - Fix CLI argument parsing hang and command/flag routing
 Scope: `cmd/svc-deploy/main.go`
 Changes:
 - Parse global flags before command selection.
@@ -19,7 +19,7 @@ Acceptance criteria:
 - `svc-deploy --help` exits `0` without trying to load config.
 - CLI tests added and passing.
 
-[ ] R2 - Add CLI contract test suite
+[x] R2 - Add CLI contract test suite
 Scope: `cmd/svc-deploy/*_test.go`
 Changes:
 - Add table-driven tests for exit codes/stdout/stderr for:
