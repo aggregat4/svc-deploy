@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -612,26 +611,4 @@ func (r *GitConfigRepo) GetCurrentCommit() (string, error) {
 func (r *GitConfigRepo) GetRuntimeConfig(service string) ([]byte, error) {
 	configPath := filepath.Join(r.path, "a4-services", "services", service, "runtime.env")
 	return os.ReadFile(configPath)
-}
-
-// Mock implementations for testing
-
-// MockArtifactFetcher is a test artifact fetcher using httptest.
-type MockArtifactFetcher struct {
-	server *httptest.Server
-}
-
-func NewMockArtifactFetcher() *MockArtifactFetcher {
-	return &MockArtifactFetcher{}
-}
-
-func (m *MockArtifactFetcher) SetServer(server *httptest.Server) {
-	m.server = server
-}
-
-func (m *MockArtifactFetcher) Fetch(ctx context.Context, url string, checksumURL string) (io.ReadCloser, string, error) {
-	if m.server == nil {
-		return nil, "", fmt.Errorf("no mock server configured")
-	}
-	return nil, "", nil
 }

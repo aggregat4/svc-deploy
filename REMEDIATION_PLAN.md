@@ -116,7 +116,7 @@ Acceptance criteria:
 - Error policy is documented in code and tests.
 - No ignored metadata/history write failures in deploy/rollback paths.
 
-[ ] R12 - Harden checksum parsing
+[x] R12 - Harden checksum parsing
 Scope: `cmd/svc-deploy/impl.go`
 Changes:
 - Validate checksum file format before indexing tokens.
