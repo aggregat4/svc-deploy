@@ -136,7 +136,7 @@ Acceptance criteria:
 - Production binary package contains only runtime implementations.
 - No dead mock code in `cmd/svc-deploy`.
 
-[ ] R14 - Expand integration-style tests to use realistic local fixtures
+[x] R14 - Expand integration-style tests to use realistic local fixtures
 Scope: `internal/*`, `testdata/`
 Changes:
 - Add local fixture generation for real `.tar.gz` artifact and checksum.

@@ -1006,3 +1006,272 @@ func TestDeployCapturesMetadataWriteErrorsAsWarnings(t *testing.T) {
 		t.Errorf("Version = %q, want %q", result.Version, "v1.0.0")
 	}
 }
+
+// R15: Test deploy restart failure triggers rollback
+func TestDeployRestartFailureTriggersRollback(t *testing.T) {
+	ctx := context.Background()
+
+	// Setup mocks
+	fs := testutil.NewMockFS()
+	fs.SetPostExtractCallback(func(dst string) {
+		binaryPath := dst + "/bin/svc-a"
+		fs.AddFile(binaryPath, []byte("binary"))
+		fs.AddDir(dst + "/data")
+	})
+	fetcher := testutil.NewMockArtifactFetcher()
+	locker := testutil.NewMockLocker()
+	svcMgr := testutil.NewMockServiceManager()
+	healthChecker := testutil.NewMockHealthChecker()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	configRepo := testutil.NewMockConfigRepo()
+	clock := testutil.NewMockClock(time.Now())
+
+	// Setup existing release (current)
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.0.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.0.0/bin/svc-a", []byte("old binary"))
+	symlinkMgr.SetCurrentDirect("/opt/a4-services/svc-a", "/opt/a4-services/svc-a/releases/v1.0.0")
+
+	// Setup secrets file
+	fs.AddFile("/etc/a4-services/svc-a.env", []byte("SECRET=value"))
+
+	svcCfg := config.ServiceConfig{
+		ReleaseURLTemplate:       "https://github.com/org/svc-a/releases/download/{{.Version}}/{{.Artifact}}",
+		ArtifactFilenameTemplate: "{{.Service}}-{{.Version}}.tar.gz",
+		BinaryPath:               "bin/svc-a",
+		HealthCheckURL:           "http://127.0.0.1:8080/healthz",
+		SystemdUnit:              "svc-a.service",
+		DBFilename:               "svc-a.db",
+		StartupTimeout:           30,
+		KeepReleases:             5,
+	}
+
+	fetcher.AddArtifact(
+		"https://github.com/org/svc-a/releases/download/v1.1.0/svc-a-v1.1.0.tar.gz",
+		[]byte("new tarball"),
+		"sha256hash",
+	)
+
+	// Health check passes, but service restart will fail
+	healthChecker.SetHealthy("http://127.0.0.1:8080/healthz", true)
+
+	// Simulate service restart failure
+	svcMgr.SetError("svc-a.service", fmt.Errorf("systemctl failed: service failed to start"))
+
+	deps := Deps{
+		FS:            fs,
+		Fetcher:       fetcher,
+		Locker:        locker,
+		ServiceMgr:    svcMgr,
+		HealthChecker: healthChecker,
+		SymlinkMgr:    symlinkMgr,
+		ConfigRepo:    configRepo,
+		Clock:         clock,
+	}
+
+	op := New(svcCfg, "svc-a", "v1.1.0", deps)
+	_, err := op.Run(ctx)
+
+	// Deploy should fail due to restart failure
+	if err == nil {
+		t.Fatal("expected error due to service restart failure")
+	}
+
+	// Verify error mentions restart
+	if !strings.Contains(err.Error(), "restarting service") {
+		t.Errorf("expected error about service restart, got: %v", err)
+	}
+
+	// Verify rollback occurred - current should be back to v1.0.0
+	current, _ := symlinkMgr.GetCurrent("/opt/a4-services/svc-a")
+	if current != "v1.0.0" {
+		t.Errorf("after rollback, current = %q, want %q", current, "v1.0.0")
+	}
+
+	// Verify service was restarted again after rollback
+	restarts := svcMgr.GetRestarts()
+	if len(restarts) < 2 {
+		t.Errorf("expected at least 2 restarts (failed + rollback), got %d", len(restarts))
+	}
+}
+
+// R15: Test deploy success writes metadata and history
+func TestDeploySuccessWritesMetadataAndHistory(t *testing.T) {
+	ctx := context.Background()
+
+	// Setup mocks
+	fs := testutil.NewMockFS()
+	fs.SetPostExtractCallback(func(dst string) {
+		binaryPath := dst + "/bin/svc-a"
+		fs.AddFile(binaryPath, []byte("binary"))
+		fs.AddDir(dst + "/data")
+	})
+	fetcher := testutil.NewMockArtifactFetcher()
+	locker := testutil.NewMockLocker()
+	svcMgr := testutil.NewMockServiceManager()
+	healthChecker := testutil.NewMockHealthChecker()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	configRepo := testutil.NewMockConfigRepo()
+	clock := testutil.NewMockClock(time.Now())
+
+	// Setup secrets file
+	fs.AddFile("/etc/a4-services/svc-a.env", []byte("SECRET=value"))
+
+	svcCfg := config.ServiceConfig{
+		ReleaseURLTemplate:       "https://github.com/org/svc-a/releases/download/{{.Version}}/{{.Artifact}}",
+		ArtifactFilenameTemplate: "{{.Service}}-{{.Version}}.tar.gz",
+		BinaryPath:               "bin/svc-a",
+		HealthCheckURL:           "http://127.0.0.1:8080/healthz",
+		SystemdUnit:              "svc-a.service",
+		DBFilename:               "svc-a.db",
+		StartupTimeout:           30,
+		KeepReleases:             5,
+	}
+
+	fetcher.AddArtifact(
+		"https://github.com/org/svc-a/releases/download/v1.0.0/svc-a-v1.0.0.tar.gz",
+		[]byte("fake tarball"),
+		"sha256hash",
+	)
+
+	healthChecker.SetHealthy("http://127.0.0.1:8080/healthz", true)
+
+	deps := Deps{
+		FS:            fs,
+		Fetcher:       fetcher,
+		Locker:        locker,
+		ServiceMgr:    svcMgr,
+		HealthChecker: healthChecker,
+		SymlinkMgr:    symlinkMgr,
+		ConfigRepo:    configRepo,
+		Clock:         clock,
+	}
+
+	op := New(svcCfg, "svc-a", "v1.0.0", deps)
+	result, err := op.Run(ctx)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify result
+	if result.Version != "v1.0.0" {
+		t.Errorf("Version = %q, want %q", result.Version, "v1.0.0")
+	}
+
+	// Verify metadata was written
+	metadataPath := "/opt/a4-services/svc-a/releases/v1.0.0/metadata/release.json"
+	if !fs.Exists(metadataPath) {
+		t.Errorf("metadata file should exist at %s", metadataPath)
+	}
+
+	// Verify metadata content
+	metadataContent, err := fs.ReadFile(metadataPath)
+	if err != nil {
+		t.Fatalf("failed to read metadata: %v", err)
+	}
+
+	var metadata Metadata
+	if err := json.Unmarshal(metadataContent, &metadata); err != nil {
+		t.Fatalf("failed to parse metadata: %v", err)
+	}
+
+	if metadata.Version != "v1.0.0" {
+		t.Errorf("metadata.Version = %q, want %q", metadata.Version, "v1.0.0")
+	}
+
+	// Verify history was written
+	historyPath := "/opt/a4-services/svc-a/shared/deploy-history.log"
+	if !fs.Exists(historyPath) {
+		t.Errorf("history file should exist at %s", historyPath)
+	}
+
+	historyContent, err := fs.ReadFile(historyPath)
+	if err != nil {
+		t.Fatalf("failed to read history: %v", err)
+	}
+
+	// Verify history contains deploy entry
+	if !strings.Contains(string(historyContent), "DEPLOY v1.0.0") {
+		t.Errorf("history should contain DEPLOY v1.0.0, got: %s", string(historyContent))
+	}
+}
+
+// R15: Test secret preflight failure before cutover (symlink not switched)
+func TestDeploySecretPreflightFailureBeforeCutover(t *testing.T) {
+	ctx := context.Background()
+
+	// Setup mocks
+	fs := testutil.NewMockFS()
+	fs.SetPostExtractCallback(func(dst string) {
+		binaryPath := dst + "/bin/svc-a"
+		fs.AddFile(binaryPath, []byte("binary"))
+		fs.AddDir(dst + "/data")
+	})
+	fetcher := testutil.NewMockArtifactFetcher()
+	locker := testutil.NewMockLocker()
+	svcMgr := testutil.NewMockServiceManager()
+	healthChecker := testutil.NewMockHealthChecker()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	configRepo := testutil.NewMockConfigRepo()
+	clock := testutil.NewMockClock(time.Now())
+
+	// Setup existing release
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.0.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.0.0/bin/svc-a", []byte("old binary"))
+	symlinkMgr.SetCurrentDirect("/opt/a4-services/svc-a", "/opt/a4-services/svc-a/releases/v1.0.0")
+
+	// DO NOT create secrets file - this should cause preflight failure
+
+	svcCfg := config.ServiceConfig{
+		ReleaseURLTemplate:       "https://github.com/org/svc-a/releases/download/{{.Version}}/{{.Artifact}}",
+		ArtifactFilenameTemplate: "{{.Service}}-{{.Version}}.tar.gz",
+		BinaryPath:               "bin/svc-a",
+		HealthCheckURL:           "http://127.0.0.1:8080/healthz",
+		SystemdUnit:              "svc-a.service",
+		DBFilename:               "svc-a.db",
+		StartupTimeout:           30,
+		KeepReleases:             5,
+	}
+
+	fetcher.AddArtifact(
+		"https://github.com/org/svc-a/releases/download/v1.1.0/svc-a-v1.1.0.tar.gz",
+		[]byte("new tarball"),
+		"sha256hash",
+	)
+
+	deps := Deps{
+		FS:            fs,
+		Fetcher:       fetcher,
+		Locker:        locker,
+		ServiceMgr:    svcMgr,
+		HealthChecker: healthChecker,
+		SymlinkMgr:    symlinkMgr,
+		ConfigRepo:    configRepo,
+		Clock:         clock,
+	}
+
+	op := New(svcCfg, "svc-a", "v1.1.0", deps)
+	_, err := op.Run(ctx)
+
+	// Deploy should fail due to missing secrets
+	if err == nil {
+		t.Fatal("expected error due to missing secrets file")
+	}
+
+	// Verify error mentions preflight/secrets
+	if !strings.Contains(err.Error(), "preflight") || !strings.Contains(err.Error(), "secrets") {
+		t.Errorf("expected preflight secrets error, got: %v", err)
+	}
+
+	// CRITICAL: Verify symlink was NOT switched (cutover didn't happen)
+	current, _ := symlinkMgr.GetCurrent("/opt/a4-services/svc-a")
+	if current != "v1.0.0" {
+		t.Errorf("symlink should NOT have switched on preflight failure, current = %q", current)
+	}
+
+	// Verify service was NOT restarted
+	restarts := svcMgr.GetRestarts()
+	if len(restarts) > 0 {
+		t.Errorf("service should not be restarted when preflight fails, got %d restarts", len(restarts))
+	}
+}
