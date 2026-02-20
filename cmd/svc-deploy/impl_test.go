@@ -275,6 +275,41 @@ func TestParseChecksumFile(t *testing.T) {
 			content:   validChecksum + "abc",
 			expectErr: true,
 		},
+		{
+			name:    "multiline_file",
+			content: validChecksum + "  file1.tar.gz\n" + validChecksum + "  file2.tar.gz",
+			want:    validChecksum,
+		},
+		{
+			name:      "checksum_with_special_chars",
+			content:   strings.Repeat("@", 64), // '@' is not hex
+			expectErr: true,
+		},
+		{
+			name:      "checksum_63_chars",
+			content:   validChecksum[:63], // One char short
+			expectErr: true,
+		},
+		{
+			name:      "checksum_65_chars",
+			content:   validChecksum + "a", // One char too many
+			expectErr: true,
+		},
+		{
+			name:      "mixed_valid_invalid_hex",
+			content:   strings.Repeat("abc123", 10) + "xyz", // 60 hex + 3 non-hex = 63 chars
+			expectErr: true,
+		},
+		{
+			name:    "leading_whitespace",
+			content: "   \t\n" + validChecksum,
+			want:    validChecksum,
+		},
+		{
+			name:    "trailing_whitespace",
+			content: validChecksum + "   \t\n",
+			want:    validChecksum,
+		},
 	}
 
 	for _, tt := range tests {

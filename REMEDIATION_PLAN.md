@@ -107,7 +107,7 @@ Acceptance criteria:
 - Status works for both absolute and relative `current` symlink targets.
 - Tests added for both modes.
 
-[ ] R11 - Stop silently dropping metadata/history write errors
+[x] R11 - Stop silently dropping metadata/history write errors
 Scope: `internal/deploy/deploy.go`, `internal/rollback/rollback.go`
 Changes:
 - Handle write errors explicitly.
