@@ -74,7 +74,7 @@ Acceptance criteria:
 - Low disk and missing secret file both fail deploy before cutover.
 - Tests cover both failures.
 
-[ ] R7 - Fix rollback history target version logging
+[x] R7 - Fix rollback history target version logging
 Scope: `internal/rollback/rollback.go`
 Changes:
 - Persist resolved target version (not raw user arg) in rollback history.
