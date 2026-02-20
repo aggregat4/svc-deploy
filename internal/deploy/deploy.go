@@ -168,7 +168,7 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 
 	// 15. Write metadata and history
 	deployedAt := op.deps.Clock.Now()
-	_ = op.writeMetadata(releasePath, checksum, configCommit, deployedAt)
+	_ = op.writeMetadata(releasePath, checksum, configCommit, deployedAt, artifactURL)
 	_ = op.appendHistory(deployedAt, previousVersion, "")
 
 	// 16. Prune old releases (best effort - don't fail deploy if prune fails)
@@ -384,7 +384,7 @@ func (op *Operation) rollback(servicePath string) {
 	_ = op.deps.ServiceMgr.Restart(context.Background(), op.cfg.SystemdUnit)
 }
 
-func (op *Operation) writeMetadata(releasePath, checksum, configCommit string, deployedAt time.Time) error {
+func (op *Operation) writeMetadata(releasePath, checksum, configCommit string, deployedAt time.Time, sourceURL string) error {
 	metadataDir := filepath.Join(releasePath, "metadata")
 	if err := op.deps.FS.MkdirAll(metadataDir, 0755); err != nil {
 		return err
@@ -394,7 +394,7 @@ func (op *Operation) writeMetadata(releasePath, checksum, configCommit string, d
 		Version:      op.version,
 		SHA256:       checksum,
 		DeployedAt:   deployedAt,
-		SourceURL:    op.cfg.ReleaseURLTemplate,
+		SourceURL:    sourceURL,
 		ConfigCommit: configCommit,
 		DeployID:     fmt.Sprintf("%s:%s:%d", op.service, op.version, deployedAt.Unix()),
 	}

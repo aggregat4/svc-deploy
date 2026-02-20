@@ -344,12 +344,12 @@ func TestCompareVersions_InvalidVersions(t *testing.T) {
 
 func TestParseSemver(t *testing.T) {
 	tests := []struct {
-		input       string
-		expectOK    bool
-		major       int
-		minor       int
-		patch       int
-		rest        string
+		input    string
+		expectOK bool
+		major    int
+		minor    int
+		patch    int
+		rest     string
 	}{
 		// Valid versions
 		{"v1.2.3", true, 1, 2, 3, ""},

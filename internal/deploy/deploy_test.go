@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -817,5 +818,93 @@ func TestDeployPreflightEmptySecretsFile(t *testing.T) {
 	current, _ := symlinkMgr.GetCurrent("/opt/a4-services/svc-a")
 	if current != "v1.0.0" {
 		t.Errorf("symlink should not have switched on preflight failure, current = %q", current)
+	}
+}
+
+func TestDeployWritesCorrectSourceURLInMetadata(t *testing.T) {
+	ctx := context.Background()
+
+	// Setup mocks
+	fs := testutil.NewMockFS()
+	fs.SetPostExtractCallback(func(dst string) {
+		binaryPath := dst + "/bin/svc-a"
+		fs.AddFile(binaryPath, []byte("binary"))
+		fs.AddDir(dst + "/data")
+	})
+	fetcher := testutil.NewMockArtifactFetcher()
+	locker := testutil.NewMockLocker()
+	svcMgr := testutil.NewMockServiceManager()
+	healthChecker := testutil.NewMockHealthChecker()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	configRepo := testutil.NewMockConfigRepo()
+	clock := testutil.NewMockClock(time.Now())
+
+	// Setup secrets file
+	fs.AddFile("/etc/a4-services/svc-a.env", []byte("SECRET=value"))
+
+	// The actual rendered URL that should be fetched
+	expectedSourceURL := "https://github.com/org/svc-a/releases/download/v1.0.0/svc-a-v1.0.0.tar.gz"
+
+	svcCfg := config.ServiceConfig{
+		ReleaseURLTemplate:       "https://github.com/org/svc-a/releases/download/{{.Version}}/{{.Artifact}}",
+		ArtifactFilenameTemplate: "{{.Service}}-{{.Version}}.tar.gz",
+		BinaryPath:               "bin/svc-a",
+		HealthCheckURL:           "http://127.0.0.1:8080/healthz",
+		SystemdUnit:              "svc-a.service",
+		DBFilename:               "svc-a.db",
+		StartupTimeout:           30,
+		KeepReleases:             5,
+	}
+
+	fetcher.AddArtifact(
+		expectedSourceURL,
+		[]byte("fake tarball"),
+		"sha256hash",
+	)
+
+	healthChecker.SetHealthy("http://127.0.0.1:8080/healthz", true)
+
+	deps := Deps{
+		FS:            fs,
+		Fetcher:       fetcher,
+		Locker:        locker,
+		ServiceMgr:    svcMgr,
+		HealthChecker: healthChecker,
+		SymlinkMgr:    symlinkMgr,
+		ConfigRepo:    configRepo,
+		Clock:         clock,
+	}
+
+	op := New(svcCfg, "svc-a", "v1.0.0", deps)
+	_, err := op.Run(ctx)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify metadata was written with correct source_url
+	metadataPath := "/opt/a4-services/svc-a/releases/v1.0.0/metadata/release.json"
+	metadataContent, err := fs.ReadFile(metadataPath)
+	if err != nil {
+		t.Fatalf("failed to read metadata: %v", err)
+	}
+
+	// Parse metadata JSON
+	var metadata Metadata
+	if err := json.Unmarshal(metadataContent, &metadata); err != nil {
+		t.Fatalf("failed to parse metadata: %v", err)
+	}
+
+	// Verify source_url is the actual rendered URL, not the template
+	if metadata.SourceURL != expectedSourceURL {
+		t.Errorf("SourceURL = %q, want %q", metadata.SourceURL, expectedSourceURL)
+	}
+
+	// Verify other metadata fields
+	if metadata.Version != "v1.0.0" {
+		t.Errorf("Version = %q, want %q", metadata.Version, "v1.0.0")
+	}
+	if metadata.SHA256 != "sha256hash" {
+		t.Errorf("SHA256 = %q, want %q", metadata.SHA256, "sha256hash")
 	}
 }
