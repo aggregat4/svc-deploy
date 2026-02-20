@@ -2,7 +2,7 @@
 
 ## Summary
 
-Build a host-local deployment manager for Go + SQLite services on a single VPS with:
+Build a host-local deployment manager (written in Go) for Go + SQLite services on a single VPS with:
 
 - immutable release directories per service
 - per-release SQLite copy
