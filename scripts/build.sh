@@ -87,13 +87,27 @@ cmd_test_race() {
 cmd_lint() {
     log_info "Running linters..."
     
+    local GOLANGCI_LINT="golangci-lint"
+    
     # Check if golangci-lint is installed
     if ! command -v golangci-lint &> /dev/null; then
-        log_warn "golangci-lint not found. Installing..."
-        go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+        # Check common install locations
+        if [[ -x "${HOME}/go/bin/golangci-lint" ]]; then
+            GOLANGCI_LINT="${HOME}/go/bin/golangci-lint"
+        elif [[ -n "${GOPATH:-}" && -x "${GOPATH}/bin/golangci-lint" ]]; then
+            GOLANGCI_LINT="${GOPATH}/bin/golangci-lint"
+        elif [[ -x "$(go env GOPATH)/bin/golangci-lint" ]]; then
+            GOLANGCI_LINT="$(go env GOPATH)/bin/golangci-lint"
+        else
+            log_warn "golangci-lint not found. Installing..."
+            go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+            # Use the newly installed binary
+            GOLANGCI_LINT="$(go env GOPATH)/bin/golangci-lint"
+        fi
     fi
     
-    golangci-lint run --timeout=5m ./...
+    log_info "Using golangci-lint: ${GOLANGCI_LINT}"
+    "${GOLANGCI_LINT}" run --timeout=5m ./...
 }
 
 # Format code
