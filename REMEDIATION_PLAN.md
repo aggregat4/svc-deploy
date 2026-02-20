@@ -82,7 +82,7 @@ Acceptance criteria:
 - `rollback <service>` (implicit previous) writes correct target version in history.
 - Regression test added.
 
-[ ] R8 - Fix prune semver ordering
+[x] R8 - Fix prune semver ordering
 Scope: `internal/prune/prune.go`
 Changes:
 - Replace lexicographic compare with semantic version compare.
