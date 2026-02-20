@@ -15,11 +15,11 @@ import (
 
 // MockFS implements interfaces.FS for testing.
 type MockFS struct {
-	mu                 sync.RWMutex
-	files              map[string][]byte
-	dirs               map[string]bool
-	symlinks           map[string]string
-	fileInfo           map[string]interfaces.FileInfo
+	mu                  sync.RWMutex
+	files               map[string][]byte
+	dirs                map[string]bool
+	symlinks            map[string]string
+	fileInfo            map[string]interfaces.FileInfo
 	postExtractCallback func(string)
 }
 
@@ -152,10 +152,10 @@ func (m *MockFS) ExtractTar(r io.Reader, dst string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	// Create a marker file to indicate extraction happened
 	m.dirs[dst] = true
 	m.fileInfo[dst] = interfaces.FileInfo{
@@ -164,17 +164,17 @@ func (m *MockFS) ExtractTar(r io.Reader, dst string) error {
 		Mode:    0755,
 		ModTime: time.Now(),
 	}
-	
+
 	// Store the extracted data so tests can verify it
 	m.files[dst+"/.extracted"] = data
-	
+
 	// Call post-extract callback if set
 	if m.postExtractCallback != nil {
 		m.mu.Unlock()
 		m.postExtractCallback(dst)
 		m.mu.Lock()
 	}
-	
+
 	return nil
 }
 
@@ -335,11 +335,11 @@ func (m *MockArtifactFetcher) SetError(err error) {
 
 // MockServiceManager implements interfaces.ServiceManager for testing.
 type MockServiceManager struct {
-	mu      sync.Mutex
-	status  map[string]interfaces.ServiceStatus
-	errors  map[string]error
+	mu       sync.Mutex
+	status   map[string]interfaces.ServiceStatus
+	errors   map[string]error
 	restarts []string
-	stops   []string
+	stops    []string
 }
 
 // NewMockServiceManager creates a new mock service manager.
