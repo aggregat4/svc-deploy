@@ -42,6 +42,9 @@ type Result struct {
 	PreviousVersion string
 	DeployedAt      time.Time
 	ConfigCommit    string
+	// Warnings contains non-fatal errors that occurred during deploy.
+	// Deploy is considered successful even if warnings are present.
+	Warnings []string
 }
 
 // Metadata represents the release metadata stored in metadata/release.json.
@@ -167,18 +170,29 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 	}
 
 	// 15. Write metadata and history
+	// Errors here are captured as warnings - deploy is still considered successful
+	// since the service is already running the new version.
 	deployedAt := op.deps.Clock.Now()
-	_ = op.writeMetadata(releasePath, checksum, configCommit, deployedAt, artifactURL)
-	_ = op.appendHistory(deployedAt, previousVersion, "")
+	var warnings []string
+
+	if err := op.writeMetadata(releasePath, checksum, configCommit, deployedAt, artifactURL); err != nil {
+		warnings = append(warnings, fmt.Sprintf("failed to write metadata: %v", err))
+	}
+	if err := op.appendHistory(deployedAt, previousVersion, ""); err != nil {
+		warnings = append(warnings, fmt.Sprintf("failed to write history: %v", err))
+	}
 
 	// 16. Prune old releases (best effort - don't fail deploy if prune fails)
-	_ = op.pruneOldReleases()
+	if err := op.pruneOldReleases(); err != nil {
+		warnings = append(warnings, fmt.Sprintf("failed to prune old releases: %v", err))
+	}
 
 	return &Result{
 		Version:         op.version,
 		PreviousVersion: previousVersion,
 		DeployedAt:      deployedAt,
 		ConfigCommit:    configCommit,
+		Warnings:        warnings,
 	}, nil
 }
 

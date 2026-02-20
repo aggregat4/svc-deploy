@@ -34,6 +34,9 @@ type Result struct {
 	Version         string
 	PreviousVersion string
 	RolledBackAt    time.Time
+	// Warnings contains non-fatal errors that occurred during rollback.
+	// Rollback is considered successful even if warnings are present.
+	Warnings []string
 }
 
 // New creates a new rollback operation.
@@ -119,13 +122,20 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 	}
 
 	// 8. Record rollback in history
+	// Errors here are captured as warnings - rollback is still considered successful
+	// since the service is already running the target version.
 	rolledBackAt := op.deps.Clock.Now()
-	_ = op.appendHistory(rolledBackAt, targetVersion, currentVersion)
+	var warnings []string
+
+	if err := op.appendHistory(rolledBackAt, targetVersion, currentVersion); err != nil {
+		warnings = append(warnings, fmt.Sprintf("failed to write history: %v", err))
+	}
 
 	return &Result{
 		Version:         targetVersion,
 		PreviousVersion: currentVersion,
 		RolledBackAt:    rolledBackAt,
+		Warnings:        warnings,
 	}, nil
 }
 

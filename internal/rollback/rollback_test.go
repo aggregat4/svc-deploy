@@ -584,3 +584,93 @@ func TestRollbackHistoryLogsResolvedVersion(t *testing.T) {
 		t.Errorf("history should not contain empty target version, got: %s", string(historyContent))
 	}
 }
+
+// MockFSErroringWrite is a mock FS that errors on write operations for testing warning capture.
+type MockFSErroringWrite struct {
+	*testutil.MockFS
+	errWriteFile error
+}
+
+func (m *MockFSErroringWrite) WriteFile(path string, data []byte, perm int) error {
+	if m.errWriteFile != nil {
+		return m.errWriteFile
+	}
+	return m.MockFS.WriteFile(path, data, perm)
+}
+
+func TestRollbackCapturesHistoryWriteErrorsAsWarnings(t *testing.T) {
+	ctx := context.Background()
+
+	// Setup mocks with erroring write for history
+	fs := &MockFSErroringWrite{
+		MockFS:       testutil.NewMockFS(),
+		errWriteFile: fmt.Errorf("permission denied"),
+	}
+	locker := testutil.NewMockLocker()
+	svcMgr := testutil.NewMockServiceManager()
+	healthChecker := testutil.NewMockHealthChecker()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	clock := testutil.NewMockClock(time.Now())
+
+	// Setup existing releases
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.0.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.0.0/bin/svc-a", []byte("binary"))
+
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.1.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.1.0/bin/svc-a", []byte("binary"))
+
+	// Current is v1.1.0, previous is v1.0.0
+	symlinkMgr.SetCurrentDirect("/opt/a4-services/svc-a", "/opt/a4-services/svc-a/releases/v1.1.0")
+	symlinkMgr.SetPreviousDirect("/opt/a4-services/svc-a", "/opt/a4-services/svc-a/releases/v1.0.0")
+
+	svcCfg := config.ServiceConfig{
+		ReleaseURLTemplate:       "https://example.com/{{.Version}}",
+		ArtifactFilenameTemplate: "app-{{.Version}}.tar.gz",
+		BinaryPath:               "bin/svc-a",
+		HealthCheckURL:           "http://127.0.0.1:8080/healthz",
+		SystemdUnit:              "svc-a.service",
+		RollbackTimeout:          30,
+		KeepReleases:             5,
+	}
+
+	healthChecker.SetHealthy("http://127.0.0.1:8080/healthz", true)
+
+	deps := Deps{
+		FS:            fs,
+		Locker:        locker,
+		ServiceMgr:    svcMgr,
+		HealthChecker: healthChecker,
+		SymlinkMgr:    symlinkMgr,
+		Clock:         clock,
+	}
+
+	op := New(svcCfg, "svc-a", "", deps)
+	result, err := op.Run(ctx)
+
+	// Rollback should succeed even with history write failure
+	if err != nil {
+		t.Fatalf("rollback should succeed despite history write error, got: %v", err)
+	}
+
+	// Should have captured warnings
+	if len(result.Warnings) == 0 {
+		t.Error("expected warnings to be captured when history write fails")
+	}
+
+	// Verify warning contains expected message
+	found := false
+	for _, w := range result.Warnings {
+		if contains(w, "failed to write history") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected warning about history write failure, got: %v", result.Warnings)
+	}
+
+	// Rollback should still be considered successful
+	if result.Version != "v1.0.0" {
+		t.Errorf("Version = %q, want %q", result.Version, "v1.0.0")
+	}
+}

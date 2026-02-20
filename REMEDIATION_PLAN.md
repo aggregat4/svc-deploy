@@ -99,7 +99,7 @@ Acceptance criteria:
 - Metadata `source_url` equals concrete URL used during deploy.
 - Test verifies metadata fields.
 
-[ ] R10 - Fix status metadata path resolution for relative symlink targets
+[x] R10 - Fix status metadata path resolution for relative symlink targets
 Scope: `internal/status/status.go`
 Changes:
 - Resolve release metadata path relative to service root when symlink target is relative.

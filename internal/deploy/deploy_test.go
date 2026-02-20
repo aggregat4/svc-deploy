@@ -908,3 +908,101 @@ func TestDeployWritesCorrectSourceURLInMetadata(t *testing.T) {
 		t.Errorf("SHA256 = %q, want %q", metadata.SHA256, "sha256hash")
 	}
 }
+
+// MockFSErroringWrite is a mock FS that errors on write operations for testing warning capture.
+type MockFSErroringWrite struct {
+	*testutil.MockFS
+	errWriteFile error
+}
+
+func (m *MockFSErroringWrite) WriteFile(path string, data []byte, perm int) error {
+	if m.errWriteFile != nil {
+		return m.errWriteFile
+	}
+	return m.MockFS.WriteFile(path, data, perm)
+}
+
+func TestDeployCapturesMetadataWriteErrorsAsWarnings(t *testing.T) {
+	ctx := context.Background()
+
+	// Setup mocks with erroring write for metadata
+	fs := &MockFSErroringWrite{
+		MockFS:       testutil.NewMockFS(),
+		errWriteFile: fmt.Errorf("disk full"),
+	}
+	fs.SetPostExtractCallback(func(dst string) {
+		binaryPath := dst + "/bin/svc-a"
+		fs.AddFile(binaryPath, []byte("binary"))
+		fs.AddDir(dst + "/data")
+	})
+	fetcher := testutil.NewMockArtifactFetcher()
+	locker := testutil.NewMockLocker()
+	svcMgr := testutil.NewMockServiceManager()
+	healthChecker := testutil.NewMockHealthChecker()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	configRepo := testutil.NewMockConfigRepo()
+	clock := testutil.NewMockClock(time.Now())
+
+	// Setup secrets file
+	fs.AddFile("/etc/a4-services/svc-a.env", []byte("SECRET=value"))
+
+	svcCfg := config.ServiceConfig{
+		ReleaseURLTemplate:       "https://github.com/org/svc-a/releases/download/{{.Version}}/{{.Artifact}}",
+		ArtifactFilenameTemplate: "{{.Service}}-{{.Version}}.tar.gz",
+		BinaryPath:               "bin/svc-a",
+		HealthCheckURL:           "http://127.0.0.1:8080/healthz",
+		SystemdUnit:              "svc-a.service",
+		DBFilename:               "svc-a.db",
+		StartupTimeout:           30,
+		KeepReleases:             5,
+	}
+
+	fetcher.AddArtifact(
+		"https://github.com/org/svc-a/releases/download/v1.0.0/svc-a-v1.0.0.tar.gz",
+		[]byte("fake tarball"),
+		"sha256hash",
+	)
+
+	healthChecker.SetHealthy("http://127.0.0.1:8080/healthz", true)
+
+	deps := Deps{
+		FS:            fs,
+		Fetcher:       fetcher,
+		Locker:        locker,
+		ServiceMgr:    svcMgr,
+		HealthChecker: healthChecker,
+		SymlinkMgr:    symlinkMgr,
+		ConfigRepo:    configRepo,
+		Clock:         clock,
+	}
+
+	op := New(svcCfg, "svc-a", "v1.0.0", deps)
+	result, err := op.Run(ctx)
+
+	// Deploy should succeed even with metadata write failure
+	if err != nil {
+		t.Fatalf("deploy should succeed despite metadata write error, got: %v", err)
+	}
+
+	// Should have captured warnings
+	if len(result.Warnings) == 0 {
+		t.Error("expected warnings to be captured when metadata write fails")
+	}
+
+	// Verify warning contains expected message
+	found := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "failed to write metadata") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected warning about metadata write failure, got: %v", result.Warnings)
+	}
+
+	// Deploy should still be considered successful
+	if result.Version != "v1.0.0" {
+		t.Errorf("Version = %q, want %q", result.Version, "v1.0.0")
+	}
+}
