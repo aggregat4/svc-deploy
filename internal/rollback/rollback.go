@@ -120,7 +120,7 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 
 	// 8. Record rollback in history
 	rolledBackAt := op.deps.Clock.Now()
-	_ = op.appendHistory(rolledBackAt, currentVersion)
+	_ = op.appendHistory(rolledBackAt, targetVersion, currentVersion)
 
 	return &Result{
 		Version:         targetVersion,
@@ -145,7 +145,7 @@ func (op *Operation) waitForHealth(ctx context.Context) error {
 	}
 }
 
-func (op *Operation) appendHistory(rolledBackAt time.Time, fromVersion string) error {
+func (op *Operation) appendHistory(rolledBackAt time.Time, targetVersion, fromVersion string) error {
 	historyPath := config.HistoryPath(op.service)
 	historyDir := filepath.Dir(historyPath)
 
@@ -155,7 +155,7 @@ func (op *Operation) appendHistory(rolledBackAt time.Time, fromVersion string) e
 
 	entry := fmt.Sprintf("[%s] ROLLBACK to %s (from: %s)\n",
 		rolledBackAt.UTC().Format(time.RFC3339),
-		op.targetVersion,
+		targetVersion,
 		fromVersion)
 
 	// Append to history file

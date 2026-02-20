@@ -64,7 +64,7 @@ Acceptance criteria:
 - Systemd contract path in spec is satisfied.
 - Tests verify location and content.
 
-[ ] R6 - Add required deploy preflights (low disk + secrets file existence)
+[x] R6 - Add required deploy preflights (low disk + secrets file existence)
 Scope: `internal/deploy/deploy.go`
 Changes:
 - Add free-space preflight using `FS.DiskFree`.

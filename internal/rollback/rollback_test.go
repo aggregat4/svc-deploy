@@ -514,3 +514,73 @@ func containsHelper(s, substr string) bool {
 	}
 	return false
 }
+
+func TestRollbackHistoryLogsResolvedVersion(t *testing.T) {
+	ctx := context.Background()
+
+	// Setup mocks
+	fs := testutil.NewMockFS()
+	locker := testutil.NewMockLocker()
+	svcMgr := testutil.NewMockServiceManager()
+	healthChecker := testutil.NewMockHealthChecker()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	clock := testutil.NewMockClock(time.Now())
+
+	// Setup existing releases
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.0.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.0.0/bin/svc-a", []byte("binary"))
+
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.1.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.1.0/bin/svc-a", []byte("binary"))
+
+	// Current is v1.1.0, previous is v1.0.0
+	symlinkMgr.SetCurrentDirect("/opt/a4-services/svc-a", "/opt/a4-services/svc-a/releases/v1.1.0")
+	symlinkMgr.SetPreviousDirect("/opt/a4-services/svc-a", "/opt/a4-services/svc-a/releases/v1.0.0")
+
+	svcCfg := config.ServiceConfig{
+		ReleaseURLTemplate:       "https://example.com/{{.Version}}",
+		ArtifactFilenameTemplate: "app-{{.Version}}.tar.gz",
+		BinaryPath:               "bin/svc-a",
+		HealthCheckURL:           "http://127.0.0.1:8080/healthz",
+		SystemdUnit:              "svc-a.service",
+		RollbackTimeout:          30,
+		KeepReleases:             5,
+	}
+
+	healthChecker.SetHealthy("http://127.0.0.1:8080/healthz", true)
+
+	deps := Deps{
+		FS:            fs,
+		Locker:        locker,
+		ServiceMgr:    svcMgr,
+		HealthChecker: healthChecker,
+		SymlinkMgr:    symlinkMgr,
+		Clock:         clock,
+	}
+
+	// Rollback without explicit target - should use previous (v1.0.0)
+	op := New(svcCfg, "svc-a", "", deps)
+	_, err := op.Run(ctx)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify history file contains the RESOLVED version (v1.0.0), not empty string
+	historyPath := "/opt/a4-services/svc-a/shared/deploy-history.log"
+	historyContent, err := fs.ReadFile(historyPath)
+	if err != nil {
+		t.Fatalf("failed to read history file: %v", err)
+	}
+
+	// History should log "ROLLBACK to v1.0.0" not "ROLLBACK to  (from:..."
+	expectedEntry := "ROLLBACK to v1.0.0"
+	if !contains(string(historyContent), expectedEntry) {
+		t.Errorf("history should contain %q, got: %s", expectedEntry, string(historyContent))
+	}
+
+	// Make sure it doesn't log empty target version
+	if contains(string(historyContent), "ROLLBACK to  (from:") {
+		t.Errorf("history should not contain empty target version, got: %s", string(historyContent))
+	}
+}
