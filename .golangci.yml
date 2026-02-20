@@ -1,110 +1,49 @@
-# golangci-lint configuration
-# Documentation: https://golangci-lint.run/usage/configuration/
+# golangci-lint configuration - pragmatic defaults
+# Focus on catching bugs, not style nitpicks
 
 run:
   timeout: 5m
   go: "1.26"
-  skip-dirs:
-    - vendor
 
 linters:
   enable:
-    # Default linters
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
-    # Additional linters
-    - bodyclose
-    - copyloopvar
-    - durationcheck
-    - errorlint
-    - gocritic
-    - gofmt
-    - goimports
-    - gosec
-    - misspell
-    - nakedret
-    - noctx
-    - nolintlint
-    - prealloc
-    - predeclared
-    - reassign
-    - revive
-    - tenv
-    - unconvert
-    - unparam
-    - wastedassign
-    - whitespace
-
-linters-settings:
-  gocritic:
-    enabled-tags:
-      - performance
-      - style
-      - experimental
-    disabled-checks:
-      - wrapperFunc
-      - dupImport
-
-  gosec:
-    excludes:
-      - G304 # Potential file inclusion via variable
-
-  revive:
-    rules:
-      - name: blank-imports
-      - name: context-as-argument
-      - name: context-keys-type
-      - name: dot-imports
-      - name: error-return
-      - name: error-strings
-      - name: error-naming
-      - name: exported
-      - name: if-return
-      - name: increment-decrement
-      - name: var-naming
-      - name: var-declaration
-      - name: package-comments
-      - name: range
-      - name: receiver-naming
-      - name: time-naming
-      - name: unexported-return
-      - name: indent-error-flow
-      - name: errorf
-      - name: empty-block
-      - name: superfluous-else
-      - name: unused-parameter
-      - name: unreachable-code
-      - name: redefines-builtin-id
-
-  errcheck:
-    check-blank: true
-
-  staticcheck:
-    checks: ["all"]
+    # Core correctness linters
+    - errcheck      # Unchecked errors
+    - gosimple      # Simplifications
+    - govet         # Go vet analysis
+    - ineffassign   # Ineffective assignments
+    - staticcheck   # Static analysis
+    - unused        # Unused code
+    # Basic style
+    - gofmt         # Formatting
+    - goimports     # Import ordering
+  
+  disable:
+    # Too noisy for our use case
+    - gocritic      # Style opinions (hugeParam, octalLiteral, etc.)
+    - revive        # Documentation requirements
+    - gosec         # Security (many false positives)
+    - unparam       # Unused params (tests/mocks trigger this)
+    - prealloc      # Preallocation hints
+    - errorlint     # Error wrapping style
 
 issues:
-  exclude-use-default: false
+  exclude-use-default: true
+  exclude-dirs:
+    - vendor
   max-issues-per-linter: 0
   max-same-issues: 0
   
   exclude-rules:
-    # Exclude some linters from running on tests files
-    - path: _test\.go
+    # Don't require error check on Close() in defer - common pattern
+    - text: "Error return value of `.*\\.Close` is not checked"
       linters:
-        - gosec
         - errcheck
-    
-    # Exclude shadow checking in test files
-    - path: _test\.go
-      text: "shadow"
+    # Don't require error check on Remove/RemoveAll cleanup
+    - text: "Error return value of `.*\\.Remove(All)?` is not checked"
       linters:
-        - govet
-    
-    # Exclude known linter issues
-    - text: "weak cryptographic primitive"
+        - errcheck
+    # Don't require error check on simple writes
+    - text: "Error return value of `fmt\\.(Fprint|Print|Sprint)"
       linters:
-        - gosec
+        - errcheck

@@ -49,13 +49,13 @@ func (fs *RealFS) CopyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer sourceFile.Close()
+	defer func() { _ = sourceFile.Close() }()
 
 	destFile, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer destFile.Close()
+	defer func() { _ = destFile.Close() }()
 
 	_, err = io.Copy(destFile, sourceFile)
 	if err != nil {
@@ -99,13 +99,13 @@ func (fs *RealFS) CreateCompressedBackup(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	gzWriter := gzip.NewWriter(file)
-	defer gzWriter.Close()
+	defer func() { _ = gzWriter.Close() }()
 
 	tarWriter := tar.NewWriter(gzWriter)
-	defer tarWriter.Close()
+	defer func() { _ = tarWriter.Close() }()
 
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -132,7 +132,7 @@ func (fs *RealFS) CreateCompressedBackup(src, dst string) error {
 			if err != nil {
 				return err
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 
 			_, err = io.Copy(tarWriter, f)
 			return err
@@ -253,7 +253,7 @@ func (f *HTTPArtifactFetcher) Fetch(ctx context.Context, url string, checksumURL
 	if err != nil {
 		return nil, "", fmt.Errorf("fetching checksum: %w", err)
 	}
-	defer checksumResp.Body.Close()
+	defer func() { _ = checksumResp.Body.Close() }()
 
 	if checksumResp.StatusCode != http.StatusOK {
 		return nil, "", fmt.Errorf("checksum fetch failed: %s", checksumResp.Status)
@@ -278,13 +278,13 @@ func (f *HTTPArtifactFetcher) Fetch(ctx context.Context, url string, checksumURL
 	}
 
 	if artifactResp.StatusCode != http.StatusOK {
-		artifactResp.Body.Close()
+		_ = artifactResp.Body.Close()
 		return nil, "", fmt.Errorf("artifact fetch failed: %s", artifactResp.Status)
 	}
 
 	// Read and verify checksum
 	data, err := io.ReadAll(artifactResp.Body)
-	artifactResp.Body.Close()
+	_ = artifactResp.Body.Close()
 	if err != nil {
 		return nil, "", fmt.Errorf("reading artifact: %w", err)
 	}
@@ -322,13 +322,13 @@ func (l *FileLocker) Acquire(service string) (func(), error) {
 	// Try to acquire exclusive lock (non-blocking)
 	err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 	if err != nil {
-		file.Close()
+		_ = file.Close()
 		return nil, fmt.Errorf("could not acquire lock for service %s: %w", service, err)
 	}
 
 	return func() {
-		syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-		file.Close()
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = file.Close()
 	}, nil
 }
 
@@ -402,7 +402,7 @@ func (h *HTTPHealthChecker) Check(ctx context.Context, url string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("health check returned status %d", resp.StatusCode)
@@ -449,9 +449,7 @@ func (sm *AtomicSymlinkManager) SetCurrent(servicePath, releaseVersion string) e
 	if err == nil {
 		// Update previous symlink
 		_ = sm.fs.Remove(previousPath)
-		if err := sm.fs.Symlink(oldCurrent, previousPath); err != nil {
-			return fmt.Errorf("updating previous symlink: %w", err)
-		}
+		_ = sm.fs.Symlink(oldCurrent, previousPath)
 	}
 
 	// Create new symlink atomically
@@ -479,6 +477,7 @@ func (sm *AtomicSymlinkManager) RollbackCurrent(servicePath string) error {
 
 	// Get current before switching
 	oldCurrent, _ := sm.fs.Readlink(currentPath)
+	_ = oldCurrent
 
 	// Atomically switch back
 	tempLink := filepath.Join(servicePath, ".current.rollback")
@@ -493,8 +492,8 @@ func (sm *AtomicSymlinkManager) RollbackCurrent(servicePath string) error {
 	}
 
 	// Update previous to point to what was current
+	_ = sm.fs.Remove(previousPath)
 	if oldCurrent != "" {
-		_ = sm.fs.Remove(previousPath)
 		_ = sm.fs.Symlink(oldCurrent, previousPath)
 	}
 

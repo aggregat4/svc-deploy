@@ -90,6 +90,7 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 
 	// Get current version before switching
 	currentVersion, _ := op.deps.SymlinkMgr.GetCurrent(servicePath)
+	_ = currentVersion
 
 	// 4. Switch current to target
 	if err := op.deps.SymlinkMgr.SetCurrent(servicePath, targetVersion); err != nil {
@@ -100,8 +101,7 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 	if err := op.deps.ServiceMgr.Restart(ctx, op.cfg.SystemdUnit); err != nil {
 		// Try to restore prior current
 		if currentVersion != "" {
-			_ = op.deps.SymlinkMgr.SetCurrent(servicePath, currentVersion)
-			_ = op.deps.ServiceMgr.Restart(context.Background(), op.cfg.SystemdUnit)
+			_, _ = op.deps.SymlinkMgr.SetCurrent(servicePath, currentVersion), op.deps.ServiceMgr.Restart(context.Background(), op.cfg.SystemdUnit)
 		}
 		return nil, fmt.Errorf("restarting service: %w", err)
 	}
@@ -113,17 +113,14 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 	if err := op.waitForHealth(healthCtx); err != nil {
 		// 7. Restore prior current
 		if currentVersion != "" {
-			_ = op.deps.SymlinkMgr.SetCurrent(servicePath, currentVersion)
-			_ = op.deps.ServiceMgr.Restart(context.Background(), op.cfg.SystemdUnit)
+			_, _ = op.deps.SymlinkMgr.SetCurrent(servicePath, currentVersion), op.deps.ServiceMgr.Restart(context.Background(), op.cfg.SystemdUnit)
 		}
 		return nil, fmt.Errorf("health check failed, restored prior: %w", err)
 	}
 
 	// 8. Record rollback in history
 	rolledBackAt := op.deps.Clock.Now()
-	if err := op.appendHistory(rolledBackAt, currentVersion); err != nil {
-		// Non-fatal
-	}
+	_ = op.appendHistory(rolledBackAt, currentVersion)
 
 	return &Result{
 		Version:         targetVersion,
@@ -163,7 +160,9 @@ func (op *Operation) appendHistory(rolledBackAt time.Time, fromVersion string) e
 
 	// Append to history file
 	existing, _ := op.deps.FS.ReadFile(historyPath)
-	newContent := append(existing, []byte(entry)...)
+	newContent := make([]byte, len(existing)+len(entry))
+	copy(newContent, existing)
+	copy(newContent[len(existing):], []byte(entry))
 
 	return op.deps.FS.WriteFile(historyPath, newContent, 0644)
 }

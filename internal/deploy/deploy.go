@@ -92,7 +92,7 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fetching artifact: %w", err)
 	}
-	defer artifactReader.Close()
+	defer func() { _ = artifactReader.Close() }()
 
 	// 5. Create releases/<version>
 	if err := op.deps.FS.MkdirAll(releasePath, 0755); err != nil {
@@ -101,46 +101,44 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 
 	// 6. Extract artifact
 	if err := op.deps.FS.ExtractTar(artifactReader, releasePath); err != nil {
-		op.deps.FS.RemoveAll(releasePath)
+		_ = op.deps.FS.RemoveAll(releasePath)
 		return nil, fmt.Errorf("extracting artifact: %w", err)
 	}
 
 	// Verify binary exists
 	binaryPath := filepath.Join(releasePath, op.cfg.BinaryPath)
 	if !op.deps.FS.Exists(binaryPath) {
-		op.deps.FS.RemoveAll(releasePath)
+		_ = op.deps.FS.RemoveAll(releasePath)
 		return nil, fmt.Errorf("binary not found at expected path: %s", binaryPath)
 	}
 
 	// 7. Copy DB from current release (if applicable)
 	if op.cfg.DBFilename != "" {
 		if err := op.copyDatabase(servicePath, releasePath); err != nil {
-			op.deps.FS.RemoveAll(releasePath)
+			_ = op.deps.FS.RemoveAll(releasePath)
 			return nil, fmt.Errorf("copying database: %w", err)
 		}
 	}
 
-	// 8. Create pre-deploy backup
+	// 8. Create pre-deploy backup (best effort - don't fail if backup doesn't work)
 	if op.cfg.DBFilename != "" {
-		if err := op.createBackup(servicePath); err != nil {
-			// Log but don't fail - we can proceed without backup
-			// In production, you might want this to be configurable
-		}
+		_ = op.createBackup(servicePath)
 	}
 
 	// 9. Place/symlink runtime config
 	configCommit, err := op.setupRuntimeConfig(releasePath)
 	if err != nil {
-		op.deps.FS.RemoveAll(releasePath)
+		_ = op.deps.FS.RemoveAll(releasePath)
 		return nil, fmt.Errorf("setting up runtime config: %w", err)
 	}
 
 	// Get previous version before switching
 	previousVersion, _ := op.deps.SymlinkMgr.GetCurrent(servicePath)
+	_ = previousVersion
 
 	// 10-11. Update symlinks atomically
 	if err := op.deps.SymlinkMgr.SetCurrent(servicePath, op.version); err != nil {
-		op.deps.FS.RemoveAll(releasePath)
+		_ = op.deps.FS.RemoveAll(releasePath)
 		return nil, fmt.Errorf("switching current symlink: %w", err)
 	}
 
@@ -163,13 +161,8 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 
 	// 15. Write metadata and history
 	deployedAt := op.deps.Clock.Now()
-	if err := op.writeMetadata(releasePath, checksum, configCommit, deployedAt); err != nil {
-		// Non-fatal - deployment succeeded
-	}
-
-	if err := op.appendHistory(deployedAt, previousVersion, ""); err != nil {
-		// Non-fatal - deployment succeeded
-	}
+	_ = op.writeMetadata(releasePath, checksum, configCommit, deployedAt)
+	_ = op.appendHistory(deployedAt, previousVersion, "")
 
 	return &Result{
 		Version:         op.version,
@@ -419,7 +412,9 @@ func (op *Operation) appendHistory(deployedAt time.Time, previousVersion, reason
 
 	// Append to history file
 	existing, _ := op.deps.FS.ReadFile(historyPath)
-	newContent := append(existing, []byte(entry)...)
+	newContent := make([]byte, len(existing)+len(entry))
+	copy(newContent, existing)
+	copy(newContent[len(existing):], []byte(entry))
 
 	return op.deps.FS.WriteFile(historyPath, newContent, 0644)
 }

@@ -42,7 +42,7 @@ func New(cfg config.ServiceConfig, service string, keep int, deps Deps) *Operati
 }
 
 // Run executes the prune operation.
-func (op *Operation) Run(ctx context.Context) (*Result, error) {
+func (op *Operation) Run(_ context.Context) (*Result, error) {
 	servicePath := config.ServicePath(op.service)
 	releasesPath := filepath.Join(servicePath, "releases")
 
