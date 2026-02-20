@@ -440,3 +440,147 @@ func TestDeployPrunesOldReleases(t *testing.T) {
 		t.Error("v1.5.0 should still exist (current)")
 	}
 }
+
+func TestDeployWritesRuntimeConfigToSharedPath(t *testing.T) {
+	ctx := context.Background()
+
+	// Setup mocks
+	fs := testutil.NewMockFS()
+	fs.SetPostExtractCallback(func(dst string) {
+		binaryPath := dst + "/bin/svc-a"
+		fs.AddFile(binaryPath, []byte("binary"))
+		fs.AddDir(dst + "/data")
+	})
+	fetcher := testutil.NewMockArtifactFetcher()
+	locker := testutil.NewMockLocker()
+	svcMgr := testutil.NewMockServiceManager()
+	healthChecker := testutil.NewMockHealthChecker()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	configRepo := testutil.NewMockConfigRepo()
+	clock := testutil.NewMockClock(time.Now())
+
+	// Setup runtime config in repo
+	runtimeConfig := []byte("DB_HOST=localhost\nDB_PORT=5432\n")
+	configRepo.SetRuntimeConfig("svc-a", runtimeConfig)
+	configRepo.SetCommit("abc123def456")
+
+	svcCfg := config.ServiceConfig{
+		ReleaseURLTemplate:       "https://github.com/org/svc-a/releases/download/{{.Version}}/{{.Artifact}}",
+		ArtifactFilenameTemplate: "{{.Service}}-{{.Version}}.tar.gz",
+		BinaryPath:               "bin/svc-a",
+		HealthCheckURL:           "http://127.0.0.1:8080/healthz",
+		SystemdUnit:              "svc-a.service",
+		DBFilename:               "svc-a.db",
+		StartupTimeout:           30,
+		KeepReleases:             5,
+	}
+
+	fetcher.AddArtifact(
+		"https://github.com/org/svc-a/releases/download/v1.0.0/svc-a-v1.0.0.tar.gz",
+		[]byte("fake tarball"),
+		"sha256hash",
+	)
+
+	healthChecker.SetHealthy("http://127.0.0.1:8080/healthz", true)
+
+	deps := Deps{
+		FS:            fs,
+		Fetcher:       fetcher,
+		Locker:        locker,
+		ServiceMgr:    svcMgr,
+		HealthChecker: healthChecker,
+		SymlinkMgr:    symlinkMgr,
+		ConfigRepo:    configRepo,
+		Clock:         clock,
+	}
+
+	op := New(svcCfg, "svc-a", "v1.0.0", deps)
+	_, err := op.Run(ctx)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify runtime config was written to shared config path
+	sharedRuntimePath := "/opt/a4-services/svc-a/shared/config/runtime.env"
+	if !fs.Exists(sharedRuntimePath) {
+		t.Errorf("runtime.env should exist at shared config path: %s", sharedRuntimePath)
+	}
+
+	// Verify content
+	content, err := fs.ReadFile(sharedRuntimePath)
+	if err != nil {
+		t.Fatalf("failed to read runtime config: %v", err)
+	}
+	if string(content) != string(runtimeConfig) {
+		t.Errorf("runtime config content mismatch: got %q, want %q", string(content), string(runtimeConfig))
+	}
+}
+
+func TestDeployRuntimeConfigRemovedWhenNoConfigInRepo(t *testing.T) {
+	ctx := context.Background()
+
+	// Setup mocks
+	fs := testutil.NewMockFS()
+	fs.SetPostExtractCallback(func(dst string) {
+		binaryPath := dst + "/bin/svc-a"
+		fs.AddFile(binaryPath, []byte("binary"))
+		fs.AddDir(dst + "/data")
+	})
+	fetcher := testutil.NewMockArtifactFetcher()
+	locker := testutil.NewMockLocker()
+	svcMgr := testutil.NewMockServiceManager()
+	healthChecker := testutil.NewMockHealthChecker()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	configRepo := testutil.NewMockConfigRepo()
+	clock := testutil.NewMockClock(time.Now())
+
+	// Pre-existing runtime config from previous deploy
+	sharedRuntimePath := "/opt/a4-services/svc-a/shared/config/runtime.env"
+	fs.AddFile(sharedRuntimePath, []byte("old config"))
+
+	// No runtime config in repo (simulating removal)
+	// configRepo.SetRuntimeConfig not called
+
+	svcCfg := config.ServiceConfig{
+		ReleaseURLTemplate:       "https://github.com/org/svc-a/releases/download/{{.Version}}/{{.Artifact}}",
+		ArtifactFilenameTemplate: "{{.Service}}-{{.Version}}.tar.gz",
+		BinaryPath:               "bin/svc-a",
+		HealthCheckURL:           "http://127.0.0.1:8080/healthz",
+		SystemdUnit:              "svc-a.service",
+		DBFilename:               "svc-a.db",
+		StartupTimeout:           30,
+		KeepReleases:             5,
+	}
+
+	fetcher.AddArtifact(
+		"https://github.com/org/svc-a/releases/download/v1.0.0/svc-a-v1.0.0.tar.gz",
+		[]byte("fake tarball"),
+		"sha256hash",
+	)
+
+	healthChecker.SetHealthy("http://127.0.0.1:8080/healthz", true)
+
+	deps := Deps{
+		FS:            fs,
+		Fetcher:       fetcher,
+		Locker:        locker,
+		ServiceMgr:    svcMgr,
+		HealthChecker: healthChecker,
+		SymlinkMgr:    symlinkMgr,
+		ConfigRepo:    configRepo,
+		Clock:         clock,
+	}
+
+	op := New(svcCfg, "svc-a", "v1.0.0", deps)
+	_, err := op.Run(ctx)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify old runtime config was removed
+	if fs.Exists(sharedRuntimePath) {
+		t.Errorf("runtime.env should be removed when no config in repo")
+	}
+}

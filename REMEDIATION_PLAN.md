@@ -44,7 +44,7 @@ Acceptance criteria:
 
 ## P1 - Spec compliance and correctness
 
-[ ] R4 - Add deploy post-success prune step
+[x] R4 - Add deploy post-success prune step
 Scope: `internal/deploy/deploy.go`
 Changes:
 - Invoke prune logic after successful health check and metadata/history writes.

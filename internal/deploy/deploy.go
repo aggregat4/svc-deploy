@@ -126,8 +126,8 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 		_ = op.createBackup(servicePath)
 	}
 
-	// 9. Place/symlink runtime config
-	configCommit, err := op.setupRuntimeConfig(releasePath)
+	// 9. Place/symlink runtime config to shared path
+	configCommit, err := op.setupRuntimeConfig()
 	if err != nil {
 		_ = op.deps.FS.RemoveAll(releasePath)
 		return nil, fmt.Errorf("setting up runtime config: %w", err)
@@ -319,24 +319,32 @@ func (op *Operation) createBackup(servicePath string) error {
 	return op.deps.FS.CreateCompressedBackup(srcDB, backupFile)
 }
 
-func (op *Operation) setupRuntimeConfig(releasePath string) (string, error) {
-	configDir := filepath.Join(releasePath, "config")
-	if err := op.deps.FS.MkdirAll(configDir, 0755); err != nil {
-		return "", err
+// setupRuntimeConfig places the runtime config at the shared config path
+// as required by the systemd contract: /opt/a4-services/<service>/shared/config/runtime.env
+func (op *Operation) setupRuntimeConfig() (string, error) {
+	// Ensure shared config directory exists
+	sharedConfigDir := config.SharedConfigPath(op.service)
+	if err := op.deps.FS.MkdirAll(sharedConfigDir, 0755); err != nil {
+		return "", fmt.Errorf("creating shared config dir: %w", err)
 	}
 
 	// Try to get config from repo
 	configData, err := op.deps.ConfigRepo.GetRuntimeConfig(op.service)
 	if err != nil {
-		// No runtime config is OK
-		configData = []byte{}
+		// No runtime config is OK - remove any existing runtime.env
+		runtimePath := filepath.Join(sharedConfigDir, "runtime.env")
+		_ = op.deps.FS.Remove(runtimePath)
+		commit, _ := op.deps.ConfigRepo.GetCurrentCommit()
+		if commit == "" {
+			commit = "unknown"
+		}
+		return commit, nil
 	}
 
-	runtimePath := filepath.Join(configDir, "runtime.env")
-	if len(configData) > 0 {
-		if err := op.deps.FS.WriteFile(runtimePath, configData, 0644); err != nil {
-			return "", err
-		}
+	// Write runtime config to shared path
+	runtimePath := filepath.Join(sharedConfigDir, "runtime.env")
+	if err := op.deps.FS.WriteFile(runtimePath, configData, 0644); err != nil {
+		return "", fmt.Errorf("writing runtime config: %w", err)
 	}
 
 	// Get config commit
