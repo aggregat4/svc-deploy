@@ -20,62 +20,98 @@ type realClock struct{}
 func (realClock) Now() time.Time                  { return time.Now() }
 func (realClock) Since(t time.Time) time.Duration { return time.Since(t) }
 
+// cliFlags holds parsed global flags
+type cliFlags struct {
+	configPath string
+	jsonOutput bool
+	showVer    bool
+	showHelp   bool
+}
+
+// parseGlobalFlags extracts global flags and returns remaining args.
+// It handles flags in any position before or after the command.
+func parseGlobalFlags(args []string) (cliFlags, []string, error) {
+	var flags cliFlags
+	var remaining []string
+
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+
+		switch arg {
+		case "--config", "-c":
+			if i+1 >= len(args) {
+				return flags, nil, fmt.Errorf("flag %s requires an argument", arg)
+			}
+			flags.configPath = args[i+1]
+			i += 2
+		case "--json", "-j":
+			flags.jsonOutput = true
+			i++
+		case "--version", "-v":
+			flags.showVer = true
+			i++
+		case "--help", "-h":
+			flags.showHelp = true
+			i++
+		case "--":
+			// End of flags, rest are positional
+			remaining = append(remaining, args[i+1:]...)
+			return flags, remaining, nil
+		default:
+			if len(arg) > 0 && arg[0] == '-' {
+				return flags, nil, fmt.Errorf("unknown flag: %s", arg)
+			}
+			// Positional argument
+			remaining = append(remaining, arg)
+			i++
+		}
+	}
+
+	return flags, remaining, nil
+}
+
 func main() {
-	if len(os.Args) < 2 {
+	// Parse global flags from all args (before and after command)
+	flags, remaining, err := parseGlobalFlags(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Handle help/version before config loading
+	if flags.showHelp {
+		printUsage()
+		os.Exit(0)
+	}
+	if flags.showVer {
+		fmt.Println("svc-deploy", version)
+		os.Exit(0)
+	}
+
+	// Must have a command
+	if len(remaining) < 1 {
+		fmt.Fprintln(os.Stderr, "error: no command specified")
 		printUsage()
 		os.Exit(1)
 	}
 
-	cmd := os.Args[1]
-	args := os.Args[2:]
+	cmd := remaining[0]
+	cmdArgs := remaining[1:]
 
-	// Global flags
-	var configPath string
-	var jsonOutput bool
-
-	// Parse global flags
-	i := 0
-	for i < len(args) {
-		switch args[i] {
-		case "--config", "-c":
-			if i+1 < len(args) {
-				configPath = args[i+1]
-				i += 2
-			} else {
-				fmt.Fprintln(os.Stderr, "error: --config requires an argument")
-				os.Exit(1)
-			}
-		case "--json", "-j":
-			jsonOutput = true
-			i++
-		case "--version", "-v":
-			fmt.Println("svc-deploy", version)
-			os.Exit(0)
-		case "--help", "-h":
-			printUsage()
-			os.Exit(0)
-		default:
-			if args[i] == "--" {
-				i++
-				break
-			}
-			if args[i][0] == '-' {
-				fmt.Fprintf(os.Stderr, "error: unknown flag %s\n", args[i])
-				os.Exit(1)
-			}
-		}
-	}
-
-	// Load configuration
+	// Load configuration (not needed for help, already handled above)
 	var cfg *config.DeployMap
-	var err error
-	if configPath != "" {
+	if configPath := flags.configPath; configPath != "" {
 		cfg, err = config.Load(configPath)
 	} else {
 		cfg, err = config.LoadFromDefaultPaths()
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: loading config: %v\n", err)
+		if flags.jsonOutput {
+			fmt.Printf(`{"success":false,"error":"loading config: %s"}`+"\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "error: loading config: %v\n", err)
+		}
 		os.Exit(1)
 	}
 
@@ -93,13 +129,13 @@ func main() {
 
 	switch cmd {
 	case "deploy":
-		if len(args) < 2 {
+		if len(cmdArgs) < 2 {
 			fmt.Fprintln(os.Stderr, "usage: svc-deploy deploy <service> <version>")
 			os.Exit(1)
 		}
-		service := args[0]
-		version := args[1]
-		exitCode := runDeploy(ctx, cfg, service, version, deploy.Deps{
+		service := cmdArgs[0]
+		ver := cmdArgs[1]
+		exitCode := runDeploy(ctx, cfg, service, ver, deploy.Deps{
 			FS:            fs,
 			Fetcher:       fetcher,
 			Locker:        locker,
@@ -108,18 +144,18 @@ func main() {
 			SymlinkMgr:    symlinkMgr,
 			ConfigRepo:    configRepo,
 			Clock:         clock,
-		}, jsonOutput)
+		}, flags.jsonOutput)
 		os.Exit(exitCode)
 
 	case "rollback":
-		if len(args) < 1 {
+		if len(cmdArgs) < 1 {
 			fmt.Fprintln(os.Stderr, "usage: svc-deploy rollback <service> [target-version]")
 			os.Exit(1)
 		}
-		service := args[0]
+		service := cmdArgs[0]
 		targetVersion := ""
-		if len(args) >= 2 {
-			targetVersion = args[1]
+		if len(cmdArgs) >= 2 {
+			targetVersion = cmdArgs[1]
 		}
 		exitCode := runRollback(ctx, cfg, service, targetVersion, rollback.Deps{
 			FS:            fs,
@@ -128,37 +164,37 @@ func main() {
 			HealthChecker: healthChecker,
 			SymlinkMgr:    symlinkMgr,
 			Clock:         clock,
-		}, jsonOutput)
+		}, flags.jsonOutput)
 		os.Exit(exitCode)
 
 	case "status":
-		if len(args) < 1 {
+		if len(cmdArgs) < 1 {
 			fmt.Fprintln(os.Stderr, "usage: svc-deploy status <service>")
 			os.Exit(1)
 		}
-		service := args[0]
+		service := cmdArgs[0]
 		exitCode := runStatus(ctx, cfg, service, status.Deps{
 			FS:         fs,
 			ServiceMgr: svcMgr,
-		}, jsonOutput)
+		}, flags.jsonOutput)
 		os.Exit(exitCode)
 
 	case "prune":
-		if len(args) < 1 {
+		if len(cmdArgs) < 1 {
 			fmt.Fprintln(os.Stderr, "usage: svc-deploy prune <service> [--keep N]")
 			os.Exit(1)
 		}
-		service := args[0]
+		service := cmdArgs[0]
 		keep := 0 // 0 means use config default
-		for i := 1; i < len(args); i++ {
-			if args[i] == "--keep" && i+1 < len(args) {
-				keep = parseInt(args[i+1])
+		for i := 1; i < len(cmdArgs); i++ {
+			if cmdArgs[i] == "--keep" && i+1 < len(cmdArgs) {
+				keep = parseInt(cmdArgs[i+1])
 				break
 			}
 		}
 		exitCode := runPrune(ctx, cfg, service, keep, prune.Deps{
 			FS: fs,
-		}, jsonOutput)
+		}, flags.jsonOutput)
 		os.Exit(exitCode)
 
 	case "help":

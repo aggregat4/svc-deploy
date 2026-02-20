@@ -1,5 +1,5 @@
 # Binaries
-svc-deploy
+/svc-deploy
 *.exe
 *.dll
 *.so
