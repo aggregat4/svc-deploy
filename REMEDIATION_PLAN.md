@@ -127,7 +127,7 @@ Acceptance criteria:
 
 ## P2 - Architecture and test quality upgrades
 
-[ ] R13 - Separate production and test-only implementations cleanly
+[x] R13 - Separate production and test-only implementations cleanly
 Scope: `cmd/svc-deploy/impl.go`, `internal/testutil/*`
 Changes:
 - Remove unused mock types from production package.
