@@ -91,7 +91,7 @@ Acceptance criteria:
 - `v1.10.0` sorts newer than `v1.9.0`.
 - Tests cover ordering edge cases.
 
-[ ] R9 - Store effective source artifact URL in release metadata
+[x] R9 - Store effective source artifact URL in release metadata
 Scope: `internal/deploy/deploy.go`
 Changes:
 - Write rendered artifact URL (the actual fetched source) into `metadata/release.json`.

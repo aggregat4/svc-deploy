@@ -264,3 +264,185 @@ func containsHelper(s, substr string) bool {
 	}
 	return false
 }
+
+func TestStatusWithRelativeSymlink(t *testing.T) {
+	ctx := context.Background()
+
+	fs := testutil.NewMockFS()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	svcMgr := testutil.NewMockServiceManager()
+
+	// Setup service and release with metadata
+	fs.AddDir("/opt/a4-services/svc-a")
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.0.0/metadata")
+	metadata := `{
+		"version": "v1.0.0",
+		"sha256": "abc123",
+		"deployed_at": "2024-01-01T00:00:00Z",
+		"deploy_id": "svc-a:v1.0.0:1234567890"
+	}`
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.0.0/metadata/release.json", []byte(metadata))
+
+	// Use RELATIVE symlink target (not absolute)
+	fs.AddSymlink("/opt/a4-services/svc-a/current", "releases/v1.0.0")
+	symlinkMgr.SetCurrentDirect("/opt/a4-services/svc-a", "releases/v1.0.0")
+
+	svcMgr.SetStatus("svc-a.service", interfaces.ServiceStatus{
+		Active:    true,
+		Loaded:    true,
+		Unit:      "svc-a.service",
+		SubStatus: "running",
+	})
+
+	svcCfg := config.ServiceConfig{
+		SystemdUnit: "svc-a.service",
+	}
+
+	deps := Deps{
+		FS:         fs,
+		ServiceMgr: svcMgr,
+	}
+
+	op := New(svcCfg, "svc-a", deps)
+	result, err := op.Run(ctx)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.CurrentVersion != "v1.0.0" {
+		t.Errorf("CurrentVersion = %q, want %q", result.CurrentVersion, "v1.0.0")
+	}
+
+	// Metadata should be loaded even with relative symlink
+	if result.Metadata == nil {
+		t.Fatal("expected metadata to be loaded with relative symlink target")
+	}
+
+	if result.Metadata.Version != "v1.0.0" {
+		t.Errorf("Metadata.Version = %q, want %q", result.Metadata.Version, "v1.0.0")
+	}
+
+	if result.Metadata.SHA256 != "abc123" {
+		t.Errorf("Metadata.SHA256 = %q, want %q", result.Metadata.SHA256, "abc123")
+	}
+}
+
+func TestStatusWithRelativeSymlinkParentTraversal(t *testing.T) {
+	ctx := context.Background()
+
+	fs := testutil.NewMockFS()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	svcMgr := testutil.NewMockServiceManager()
+
+	// Setup service and release with metadata
+	fs.AddDir("/opt/a4-services/svc-a")
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.0.0/metadata")
+	metadata := `{
+		"version": "v1.0.0",
+		"sha256": "abc123",
+		"deployed_at": "2024-01-01T00:00:00Z",
+		"deploy_id": "svc-a:v1.0.0:1234567890"
+	}`
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.0.0/metadata/release.json", []byte(metadata))
+
+	// Use relative symlink with parent directory traversal (../releases/v1.0.0)
+	// This simulates: ln -s ../releases/v1.0.0 current (from within service dir)
+	fs.AddSymlink("/opt/a4-services/svc-a/current", "../svc-a/releases/v1.0.0")
+	symlinkMgr.SetCurrentDirect("/opt/a4-services/svc-a", "../svc-a/releases/v1.0.0")
+
+	svcMgr.SetStatus("svc-a.service", interfaces.ServiceStatus{
+		Active:    true,
+		Loaded:    true,
+		Unit:      "svc-a.service",
+		SubStatus: "running",
+	})
+
+	svcCfg := config.ServiceConfig{
+		SystemdUnit: "svc-a.service",
+	}
+
+	deps := Deps{
+		FS:         fs,
+		ServiceMgr: svcMgr,
+	}
+
+	op := New(svcCfg, "svc-a", deps)
+	result, err := op.Run(ctx)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Metadata should be loaded even with relative symlink containing parent traversal
+	if result.Metadata == nil {
+		t.Fatal("expected metadata to be loaded with relative symlink containing parent traversal")
+	}
+
+	if result.Metadata.Version != "v1.0.0" {
+		t.Errorf("Metadata.Version = %q, want %q", result.Metadata.Version, "v1.0.0")
+	}
+}
+
+func TestStatusAbsoluteSymlinkStillWorks(t *testing.T) {
+	ctx := context.Background()
+
+	fs := testutil.NewMockFS()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	svcMgr := testutil.NewMockServiceManager()
+
+	// Setup service and release with metadata
+	fs.AddDir("/opt/a4-services/svc-a")
+	fs.AddDir("/opt/a4-services/svc-a/releases/v2.0.0/metadata")
+	metadata := `{
+		"version": "v2.0.0",
+		"sha256": "def456",
+		"deployed_at": "2024-02-01T00:00:00Z",
+		"source_url": "https://example.com/v2.0.0.tar.gz"
+	}`
+	fs.AddFile("/opt/a4-services/svc-a/releases/v2.0.0/metadata/release.json", []byte(metadata))
+
+	// Use ABSOLUTE symlink target (existing behavior should still work)
+	fs.AddSymlink("/opt/a4-services/svc-a/current", "/opt/a4-services/svc-a/releases/v2.0.0")
+	symlinkMgr.SetCurrentDirect("/opt/a4-services/svc-a", "/opt/a4-services/svc-a/releases/v2.0.0")
+
+	svcMgr.SetStatus("svc-a.service", interfaces.ServiceStatus{
+		Active:    true,
+		Loaded:    true,
+		Unit:      "svc-a.service",
+		SubStatus: "running",
+	})
+
+	svcCfg := config.ServiceConfig{
+		SystemdUnit: "svc-a.service",
+	}
+
+	deps := Deps{
+		FS:         fs,
+		ServiceMgr: svcMgr,
+	}
+
+	op := New(svcCfg, "svc-a", deps)
+	result, err := op.Run(ctx)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.CurrentVersion != "v2.0.0" {
+		t.Errorf("CurrentVersion = %q, want %q", result.CurrentVersion, "v2.0.0")
+	}
+
+	// Metadata should be loaded with absolute symlink
+	if result.Metadata == nil {
+		t.Fatal("expected metadata to be loaded with absolute symlink target")
+	}
+
+	if result.Metadata.Version != "v2.0.0" {
+		t.Errorf("Metadata.Version = %q, want %q", result.Metadata.Version, "v2.0.0")
+	}
+
+	if result.Metadata.SourceURL != "https://example.com/v2.0.0.tar.gz" {
+		t.Errorf("Metadata.SourceURL = %q, want %q", result.Metadata.SourceURL, "https://example.com/v2.0.0.tar.gz")
+	}
+}

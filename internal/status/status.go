@@ -64,8 +64,15 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 	if target, err := op.deps.FS.Readlink(currentPath); err == nil {
 		result.CurrentVersion = filepath.Base(target)
 
+		// Resolve metadata path - handle both absolute and relative symlink targets
+		releasePath := target
+		if !filepath.IsAbs(target) {
+			// Relative symlink target - resolve relative to service path
+			releasePath = filepath.Join(servicePath, target)
+		}
+
 		// Load metadata if available
-		metadataPath := filepath.Join(target, "metadata", "release.json")
+		metadataPath := filepath.Join(releasePath, "metadata", "release.json")
 		if data, err := op.deps.FS.ReadFile(metadataPath); err == nil {
 			var meta ReleaseMetadata
 			if err := json.Unmarshal(data, &meta); err == nil {
