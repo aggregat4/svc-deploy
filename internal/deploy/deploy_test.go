@@ -333,3 +333,110 @@ func TestDeployLockAcquisition(t *testing.T) {
 		t.Errorf("unexpected error message: %v", err)
 	}
 }
+
+func TestDeployPrunesOldReleases(t *testing.T) {
+	ctx := context.Background()
+
+	// Setup mocks
+	fs := testutil.NewMockFS()
+	fs.SetPostExtractCallback(func(dst string) {
+		binaryPath := dst + "/bin/svc-a"
+		fs.AddFile(binaryPath, []byte("binary"))
+		fs.AddDir(dst + "/data")
+	})
+	fetcher := testutil.NewMockArtifactFetcher()
+	locker := testutil.NewMockLocker()
+	svcMgr := testutil.NewMockServiceManager()
+	healthChecker := testutil.NewMockHealthChecker()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	configRepo := testutil.NewMockConfigRepo()
+	clock := testutil.NewMockClock(time.Now())
+
+	// Setup existing releases (more than keep limit)
+	fs.AddDir("/opt/a4-services/svc-a/releases")
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.0.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.0.0/bin/svc-a", []byte("old binary"))
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.1.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.1.0/bin/svc-a", []byte("old binary"))
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.2.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.2.0/bin/svc-a", []byte("old binary"))
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.3.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.3.0/bin/svc-a", []byte("old binary"))
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.4.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.4.0/bin/svc-a", []byte("old binary"))
+
+	// Current is v1.4.0, previous is v1.3.0
+	symlinkMgr.SetCurrentDirect("/opt/a4-services/svc-a", "/opt/a4-services/svc-a/releases/v1.4.0")
+	symlinkMgr.SetPreviousDirect("/opt/a4-services/svc-a", "/opt/a4-services/svc-a/releases/v1.3.0")
+	fs.AddSymlink("/opt/a4-services/svc-a/current", "/opt/a4-services/svc-a/releases/v1.4.0")
+	fs.AddSymlink("/opt/a4-services/svc-a/previous", "/opt/a4-services/svc-a/releases/v1.3.0")
+
+	// Deploy new version
+	svcCfg := config.ServiceConfig{
+		ReleaseURLTemplate:       "https://github.com/org/svc-a/releases/download/{{.Version}}/{{.Artifact}}",
+		ArtifactFilenameTemplate: "{{.Service}}-{{.Version}}.tar.gz",
+		BinaryPath:               "bin/svc-a",
+		HealthCheckURL:           "http://127.0.0.1:8080/healthz",
+		SystemdUnit:              "svc-a.service",
+		DBFilename:               "svc-a.db",
+		StartupTimeout:           30,
+		KeepReleases:             3, // Keep 3 releases
+	}
+
+	fetcher.AddArtifact(
+		"https://github.com/org/svc-a/releases/download/v1.5.0/svc-a-v1.5.0.tar.gz",
+		[]byte("new tarball"),
+		"sha256hash",
+	)
+
+	healthChecker.SetHealthy("http://127.0.0.1:8080/healthz", true)
+
+	deps := Deps{
+		FS:            fs,
+		Fetcher:       fetcher,
+		Locker:        locker,
+		ServiceMgr:    svcMgr,
+		HealthChecker: healthChecker,
+		SymlinkMgr:    symlinkMgr,
+		ConfigRepo:    configRepo,
+		Clock:         clock,
+	}
+
+	op := New(svcCfg, "svc-a", "v1.5.0", deps)
+	_, err := op.Run(ctx)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// After deploy, old releases should be pruned
+	// We had: v1.0.0, v1.1.0, v1.2.0, v1.3.0, v1.4.0 (current), + v1.5.0 (new current)
+	// Protected: v1.4.0 (previous), v1.5.0 (current)
+	// Non-protected: v1.0.0, v1.1.0, v1.2.0, v1.3.0
+	// Keep 3 newest non-protected: v1.3.0, v1.2.0, v1.1.0
+	// Removed: v1.0.0
+
+	// Check that oldest release was removed
+	if fs.Exists("/opt/a4-services/svc-a/releases/v1.0.0") {
+		t.Error("v1.0.0 should have been pruned")
+	}
+
+	// Check that kept non-protected releases still exist
+	if !fs.Exists("/opt/a4-services/svc-a/releases/v1.1.0") {
+		t.Error("v1.1.0 should still exist (within keep limit)")
+	}
+	if !fs.Exists("/opt/a4-services/svc-a/releases/v1.2.0") {
+		t.Error("v1.2.0 should still exist (within keep limit)")
+	}
+	if !fs.Exists("/opt/a4-services/svc-a/releases/v1.3.0") {
+		t.Error("v1.3.0 should still exist (within keep limit)")
+	}
+
+	// Check that protected releases still exist
+	if !fs.Exists("/opt/a4-services/svc-a/releases/v1.4.0") {
+		t.Error("v1.4.0 should still exist (previous)")
+	}
+	if !fs.Exists("/opt/a4-services/svc-a/releases/v1.5.0") {
+		t.Error("v1.5.0 should still exist (current)")
+	}
+}

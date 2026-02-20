@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/template"
 	"time"
@@ -163,6 +164,9 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 	deployedAt := op.deps.Clock.Now()
 	_ = op.writeMetadata(releasePath, checksum, configCommit, deployedAt)
 	_ = op.appendHistory(deployedAt, previousVersion, "")
+
+	// 16. Prune old releases (best effort - don't fail deploy if prune fails)
+	_ = op.pruneOldReleases()
 
 	return &Result{
 		Version:         op.version,
@@ -417,4 +421,68 @@ func (op *Operation) appendHistory(deployedAt time.Time, previousVersion, reason
 	copy(newContent[len(existing):], []byte(entry))
 
 	return op.deps.FS.WriteFile(historyPath, newContent, 0644)
+}
+
+// pruneOldReleases removes old releases keeping only the configured number.
+// This is a best-effort operation - errors are logged but not returned.
+func (op *Operation) pruneOldReleases() error {
+	servicePath := config.ServicePath(op.service)
+	releasesPath := filepath.Join(servicePath, "releases")
+
+	// Get current and previous versions (protected from pruning)
+	protected := make(map[string]bool)
+
+	currentPath := config.CurrentPath(op.service)
+	if target, err := op.deps.FS.Readlink(currentPath); err == nil {
+		protected[filepath.Base(target)] = true
+	}
+
+	previousPath := config.PreviousPath(op.service)
+	if target, err := op.deps.FS.Readlink(previousPath); err == nil {
+		protected[filepath.Base(target)] = true
+	}
+
+	// List all releases
+	entries, err := op.deps.FS.ListDirectory(releasesPath)
+	if err != nil {
+		return err
+	}
+
+	// Collect release versions
+	var releases []string
+	for _, entry := range entries {
+		if !entry.IsDir {
+			continue
+		}
+		if protected[entry.Name] {
+			continue
+		}
+		releases = append(releases, entry.Name)
+	}
+
+	// Sort by version (newest first using simple string compare for now)
+	// TODO: Use semantic versioning compare (R8)
+	sort.Slice(releases, func(i, j int) bool {
+		return releases[i] > releases[j]
+	})
+
+	toKeep := op.cfg.KeepReleases
+	if toKeep < 1 {
+		toKeep = config.DefaultKeepReleases
+	}
+
+	// Keep only the most recent N releases
+	kept := 0
+	for _, version := range releases {
+		if kept < toKeep {
+			kept++
+			continue
+		}
+
+		// Remove this release
+		releasePath := filepath.Join(releasesPath, version)
+		_ = op.deps.FS.RemoveAll(releasePath)
+	}
+
+	return nil
 }

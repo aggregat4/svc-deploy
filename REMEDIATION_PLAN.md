@@ -32,7 +32,7 @@ Acceptance criteria:
 - Tests run under `go test ./...`.
 - Output/exit assertions cover required CLI contract scenarios from spec.
 
-[ ] R3 - Fix real artifact extraction (`.tar.gz`) and harden archive extraction
+[x] R3 - Fix real artifact extraction (`.tar.gz`) and harden archive extraction
 Scope: `cmd/svc-deploy/impl.go`
 Changes:
 - Detect/decode gzip before tar read.
