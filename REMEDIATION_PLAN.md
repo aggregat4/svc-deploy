@@ -53,7 +53,7 @@ Acceptance criteria:
 - Successful deploy prunes old releases automatically.
 - Test verifies prune is called as part of deploy success flow.
 
-[ ] R5 - Place runtime config at shared path required by systemd contract
+[x] R5 - Place runtime config at shared path required by systemd contract
 Scope: `internal/deploy/deploy.go`, `internal/config/config.go`
 Changes:
 - Deploy runtime config to `/opt/a4-services/<service>/shared/config/runtime.env`.

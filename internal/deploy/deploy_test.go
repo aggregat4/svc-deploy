@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,6 +42,9 @@ func TestDeployFresh(t *testing.T) {
 		StartupTimeout:           30,
 		KeepReleases:             5,
 	}
+
+	// Setup secrets file
+	fs.AddFile("/etc/a4-services/svc-a.env", []byte("SECRET=value"))
 
 	// Add artifact and checksum
 	artifactData := []byte("fake tarball content")
@@ -111,6 +115,9 @@ func TestDeployUpgrade(t *testing.T) {
 	fs.AddFile("/opt/a4-services/svc-a/releases/v1.0.0/bin/svc-a", []byte("old binary"))
 	fs.AddFile("/opt/a4-services/svc-a/releases/v1.0.0/data/svc-a.db", []byte("old db"))
 	symlinkMgr.SetCurrentDirect("/opt/a4-services/svc-a", "/opt/a4-services/svc-a/releases/v1.0.0")
+
+	// Setup secrets file
+	fs.AddFile("/etc/a4-services/svc-a.env", []byte("SECRET=value"))
 
 	// Setup service config
 	svcCfg := config.ServiceConfig{
@@ -352,6 +359,9 @@ func TestDeployPrunesOldReleases(t *testing.T) {
 	configRepo := testutil.NewMockConfigRepo()
 	clock := testutil.NewMockClock(time.Now())
 
+	// Setup secrets file
+	fs.AddFile("/etc/a4-services/svc-a.env", []byte("SECRET=value"))
+
 	// Setup existing releases (more than keep limit)
 	fs.AddDir("/opt/a4-services/svc-a/releases")
 	fs.AddDir("/opt/a4-services/svc-a/releases/v1.0.0")
@@ -459,6 +469,9 @@ func TestDeployWritesRuntimeConfigToSharedPath(t *testing.T) {
 	configRepo := testutil.NewMockConfigRepo()
 	clock := testutil.NewMockClock(time.Now())
 
+	// Setup secrets file
+	fs.AddFile("/etc/a4-services/svc-a.env", []byte("SECRET=value"))
+
 	// Setup runtime config in repo
 	runtimeConfig := []byte("DB_HOST=localhost\nDB_PORT=5432\n")
 	configRepo.SetRuntimeConfig("svc-a", runtimeConfig)
@@ -535,6 +548,9 @@ func TestDeployRuntimeConfigRemovedWhenNoConfigInRepo(t *testing.T) {
 	configRepo := testutil.NewMockConfigRepo()
 	clock := testutil.NewMockClock(time.Now())
 
+	// Setup secrets file
+	fs.AddFile("/etc/a4-services/svc-a.env", []byte("SECRET=value"))
+
 	// Pre-existing runtime config from previous deploy
 	sharedRuntimePath := "/opt/a4-services/svc-a/shared/config/runtime.env"
 	fs.AddFile(sharedRuntimePath, []byte("old config"))
@@ -582,5 +598,224 @@ func TestDeployRuntimeConfigRemovedWhenNoConfigInRepo(t *testing.T) {
 	// Verify old runtime config was removed
 	if fs.Exists(sharedRuntimePath) {
 		t.Errorf("runtime.env should be removed when no config in repo")
+	}
+}
+
+func TestDeployPreflightLowDiskSpace(t *testing.T) {
+	ctx := context.Background()
+
+	// Setup mocks
+	fs := testutil.NewMockFS()
+	fs.SetPostExtractCallback(func(dst string) {
+		binaryPath := dst + "/bin/svc-a"
+		fs.AddFile(binaryPath, []byte("binary"))
+		fs.AddDir(dst + "/data")
+	})
+	fetcher := testutil.NewMockArtifactFetcher()
+	locker := testutil.NewMockLocker()
+	svcMgr := testutil.NewMockServiceManager()
+	healthChecker := testutil.NewMockHealthChecker()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	configRepo := testutil.NewMockConfigRepo()
+	clock := testutil.NewMockClock(time.Now())
+
+	// Setup existing release
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.0.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.0.0/bin/svc-a", []byte("old binary"))
+	symlinkMgr.SetCurrentDirect("/opt/a4-services/svc-a", "/opt/a4-services/svc-a/releases/v1.0.0")
+
+	// Setup secrets file (so we only test disk space failure)
+	fs.AddFile("/etc/a4-services/svc-a.env", []byte("SECRET=value"))
+
+	// Set disk space to below minimum (1GB default)
+	fs.SetDiskFree("/opt/a4-services/svc-a", 500*1024*1024) // 500MB
+
+	svcCfg := config.ServiceConfig{
+		ReleaseURLTemplate:       "https://github.com/org/svc-a/releases/download/{{.Version}}/{{.Artifact}}",
+		ArtifactFilenameTemplate: "{{.Service}}-{{.Version}}.tar.gz",
+		BinaryPath:               "bin/svc-a",
+		HealthCheckURL:           "http://127.0.0.1:8080/healthz",
+		SystemdUnit:              "svc-a.service",
+		DBFilename:               "svc-a.db",
+		StartupTimeout:           30,
+		KeepReleases:             5,
+		MinDiskSpace:             1 << 30, // 1GB
+	}
+
+	fetcher.AddArtifact(
+		"https://github.com/org/svc-a/releases/download/v1.1.0/svc-a-v1.1.0.tar.gz",
+		[]byte("new tarball"),
+		"sha256hash",
+	)
+
+	deps := Deps{
+		FS:            fs,
+		Fetcher:       fetcher,
+		Locker:        locker,
+		ServiceMgr:    svcMgr,
+		HealthChecker: healthChecker,
+		SymlinkMgr:    symlinkMgr,
+		ConfigRepo:    configRepo,
+		Clock:         clock,
+	}
+
+	op := New(svcCfg, "svc-a", "v1.1.0", deps)
+	_, err := op.Run(ctx)
+
+	if err == nil {
+		t.Fatal("expected error due to low disk space preflight failure")
+	}
+
+	if !strings.Contains(err.Error(), "preflight failed") || !strings.Contains(err.Error(), "insufficient disk space") {
+		t.Errorf("expected preflight disk space error, got: %v", err)
+	}
+
+	// Verify symlink was NOT switched (deploy aborted before cutover)
+	current, _ := symlinkMgr.GetCurrent("/opt/a4-services/svc-a")
+	if current != "v1.0.0" {
+		t.Errorf("symlink should not have switched on preflight failure, current = %q", current)
+	}
+}
+
+func TestDeployPreflightMissingSecretsFile(t *testing.T) {
+	ctx := context.Background()
+
+	// Setup mocks
+	fs := testutil.NewMockFS()
+	fs.SetPostExtractCallback(func(dst string) {
+		binaryPath := dst + "/bin/svc-a"
+		fs.AddFile(binaryPath, []byte("binary"))
+		fs.AddDir(dst + "/data")
+	})
+	fetcher := testutil.NewMockArtifactFetcher()
+	locker := testutil.NewMockLocker()
+	svcMgr := testutil.NewMockServiceManager()
+	healthChecker := testutil.NewMockHealthChecker()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	configRepo := testutil.NewMockConfigRepo()
+	clock := testutil.NewMockClock(time.Now())
+
+	// Setup existing release
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.0.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.0.0/bin/svc-a", []byte("old binary"))
+	symlinkMgr.SetCurrentDirect("/opt/a4-services/svc-a", "/opt/a4-services/svc-a/releases/v1.0.0")
+
+	// Do NOT create secrets file - this should cause preflight failure
+
+	svcCfg := config.ServiceConfig{
+		ReleaseURLTemplate:       "https://github.com/org/svc-a/releases/download/{{.Version}}/{{.Artifact}}",
+		ArtifactFilenameTemplate: "{{.Service}}-{{.Version}}.tar.gz",
+		BinaryPath:               "bin/svc-a",
+		HealthCheckURL:           "http://127.0.0.1:8080/healthz",
+		SystemdUnit:              "svc-a.service",
+		DBFilename:               "svc-a.db",
+		StartupTimeout:           30,
+		KeepReleases:             5,
+	}
+
+	fetcher.AddArtifact(
+		"https://github.com/org/svc-a/releases/download/v1.1.0/svc-a-v1.1.0.tar.gz",
+		[]byte("new tarball"),
+		"sha256hash",
+	)
+
+	deps := Deps{
+		FS:            fs,
+		Fetcher:       fetcher,
+		Locker:        locker,
+		ServiceMgr:    svcMgr,
+		HealthChecker: healthChecker,
+		SymlinkMgr:    symlinkMgr,
+		ConfigRepo:    configRepo,
+		Clock:         clock,
+	}
+
+	op := New(svcCfg, "svc-a", "v1.1.0", deps)
+	_, err := op.Run(ctx)
+
+	if err == nil {
+		t.Fatal("expected error due to missing secrets file preflight failure")
+	}
+
+	if !strings.Contains(err.Error(), "preflight failed") || !strings.Contains(err.Error(), "secrets file not found") {
+		t.Errorf("expected preflight secrets file error, got: %v", err)
+	}
+
+	// Verify symlink was NOT switched (deploy aborted before cutover)
+	current, _ := symlinkMgr.GetCurrent("/opt/a4-services/svc-a")
+	if current != "v1.0.0" {
+		t.Errorf("symlink should not have switched on preflight failure, current = %q", current)
+	}
+}
+
+func TestDeployPreflightEmptySecretsFile(t *testing.T) {
+	ctx := context.Background()
+
+	// Setup mocks
+	fs := testutil.NewMockFS()
+	fs.SetPostExtractCallback(func(dst string) {
+		binaryPath := dst + "/bin/svc-a"
+		fs.AddFile(binaryPath, []byte("binary"))
+		fs.AddDir(dst + "/data")
+	})
+	fetcher := testutil.NewMockArtifactFetcher()
+	locker := testutil.NewMockLocker()
+	svcMgr := testutil.NewMockServiceManager()
+	healthChecker := testutil.NewMockHealthChecker()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	configRepo := testutil.NewMockConfigRepo()
+	clock := testutil.NewMockClock(time.Now())
+
+	// Setup existing release
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.0.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.0.0/bin/svc-a", []byte("old binary"))
+	symlinkMgr.SetCurrentDirect("/opt/a4-services/svc-a", "/opt/a4-services/svc-a/releases/v1.0.0")
+
+	// Create empty secrets file
+	fs.AddFile("/etc/a4-services/svc-a.env", []byte(""))
+
+	svcCfg := config.ServiceConfig{
+		ReleaseURLTemplate:       "https://github.com/org/svc-a/releases/download/{{.Version}}/{{.Artifact}}",
+		ArtifactFilenameTemplate: "{{.Service}}-{{.Version}}.tar.gz",
+		BinaryPath:               "bin/svc-a",
+		HealthCheckURL:           "http://127.0.0.1:8080/healthz",
+		SystemdUnit:              "svc-a.service",
+		DBFilename:               "svc-a.db",
+		StartupTimeout:           30,
+		KeepReleases:             5,
+	}
+
+	fetcher.AddArtifact(
+		"https://github.com/org/svc-a/releases/download/v1.1.0/svc-a-v1.1.0.tar.gz",
+		[]byte("new tarball"),
+		"sha256hash",
+	)
+
+	deps := Deps{
+		FS:            fs,
+		Fetcher:       fetcher,
+		Locker:        locker,
+		ServiceMgr:    svcMgr,
+		HealthChecker: healthChecker,
+		SymlinkMgr:    symlinkMgr,
+		ConfigRepo:    configRepo,
+		Clock:         clock,
+	}
+
+	op := New(svcCfg, "svc-a", "v1.1.0", deps)
+	_, err := op.Run(ctx)
+
+	if err == nil {
+		t.Fatal("expected error due to empty secrets file preflight failure")
+	}
+
+	if !strings.Contains(err.Error(), "preflight failed") || !strings.Contains(err.Error(), "secrets file is empty") {
+		t.Errorf("expected preflight empty secrets file error, got: %v", err)
+	}
+
+	// Verify symlink was NOT switched (deploy aborted before cutover)
+	current, _ := symlinkMgr.GetCurrent("/opt/a4-services/svc-a")
+	if current != "v1.0.0" {
+		t.Errorf("symlink should not have switched on preflight failure, current = %q", current)
 	}
 }

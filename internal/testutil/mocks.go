@@ -21,6 +21,7 @@ type MockFS struct {
 	symlinks            map[string]string
 	fileInfo            map[string]interfaces.FileInfo
 	postExtractCallback func(string)
+	diskFree            map[string]uint64
 }
 
 // NewMockFS creates a new mock filesystem.
@@ -245,7 +246,22 @@ func (m *MockFS) Readlink(path string) (string, error) {
 }
 
 func (m *MockFS) DiskFree(path string) (uint64, error) {
-	return 10 * 1024 * 1024 * 1024, nil // 10GB free
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if free, ok := m.diskFree[path]; ok {
+		return free, nil
+	}
+	return 10 * 1024 * 1024 * 1024, nil // 10GB free default
+}
+
+// SetDiskFree sets the available disk space for a path (test helper).
+func (m *MockFS) SetDiskFree(path string, bytes uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.diskFree == nil {
+		m.diskFree = make(map[string]uint64)
+	}
+	m.diskFree[path] = bytes
 }
 
 // AddFile adds a file to the mock filesystem (test helper).

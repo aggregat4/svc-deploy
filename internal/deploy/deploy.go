@@ -133,11 +133,17 @@ func (op *Operation) Run(ctx context.Context) (*Result, error) {
 		return nil, fmt.Errorf("setting up runtime config: %w", err)
 	}
 
+	// 10. Preflight checks before cutover
+	if err := op.runPreflights(); err != nil {
+		_ = op.deps.FS.RemoveAll(releasePath)
+		return nil, fmt.Errorf("preflight failed: %w", err)
+	}
+
 	// Get previous version before switching
 	previousVersion, _ := op.deps.SymlinkMgr.GetCurrent(servicePath)
 	_ = previousVersion
 
-	// 10-11. Update symlinks atomically
+	// 11. Update symlinks atomically
 	if err := op.deps.SymlinkMgr.SetCurrent(servicePath, op.version); err != nil {
 		_ = op.deps.FS.RemoveAll(releasePath)
 		return nil, fmt.Errorf("switching current symlink: %w", err)
@@ -490,6 +496,46 @@ func (op *Operation) pruneOldReleases() error {
 		// Remove this release
 		releasePath := filepath.Join(releasesPath, version)
 		_ = op.deps.FS.RemoveAll(releasePath)
+	}
+
+	return nil
+}
+
+// runPreflights performs preflight checks before cutover.
+// Returns error if any preflight fails, aborting the deploy before symlink switch.
+func (op *Operation) runPreflights() error {
+	servicePath := config.ServicePath(op.service)
+
+	// Check 1: Disk space
+	freeSpace, err := op.deps.FS.DiskFree(servicePath)
+	if err != nil {
+		return fmt.Errorf("checking disk space: %w", err)
+	}
+
+	minSpace := op.cfg.MinDiskSpace
+	if minSpace == 0 {
+		minSpace = config.DefaultMinDiskSpace
+	}
+
+	if freeSpace < minSpace {
+		return fmt.Errorf("insufficient disk space: %d bytes free, %d bytes required",
+			freeSpace, minSpace)
+	}
+
+	// Check 2: Secrets file exists
+	secretsPath := config.SecretsPath(op.service)
+	if !op.deps.FS.Exists(secretsPath) {
+		return fmt.Errorf("secrets file not found: %s", secretsPath)
+	}
+
+	// Check 3: Secrets file is readable (basic file stat)
+	info, err := op.deps.FS.Stat(secretsPath)
+	if err != nil {
+		return fmt.Errorf("cannot stat secrets file: %w", err)
+	}
+
+	if info.Size == 0 {
+		return fmt.Errorf("secrets file is empty: %s", secretsPath)
 	}
 
 	return nil

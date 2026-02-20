@@ -16,6 +16,8 @@ const (
 	DefaultStartupTimeout = 30
 	// DefaultRollbackTimeout is the default timeout for rollback health check.
 	DefaultRollbackTimeout = 30
+	// DefaultMinDiskSpace is the default minimum free disk space required (1GB).
+	DefaultMinDiskSpace = 1 << 30 // 1GB
 )
 
 // DeployMap is the root configuration structure.
@@ -50,6 +52,8 @@ type ServiceConfig struct {
 	RollbackTimeout int `toml:"rollback_timeout"`
 	// KeepReleases is the number of releases to retain (default: 5).
 	KeepReleases int `toml:"keep_releases"`
+	// MinDiskSpace is the minimum required free disk space in bytes (default: 1GB).
+	MinDiskSpace uint64 `toml:"min_disk_space"`
 }
 
 // Load reads and parses the deploy-map.toml from the given path.
@@ -74,6 +78,9 @@ func Load(path string) (*DeployMap, error) {
 		}
 		if svc.RollbackTimeout == 0 {
 			svc.RollbackTimeout = DefaultRollbackTimeout
+		}
+		if svc.MinDiskSpace == 0 {
+			svc.MinDiskSpace = DefaultMinDiskSpace
 		}
 		cfg.Services[name] = svc
 	}
