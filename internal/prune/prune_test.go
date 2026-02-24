@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/a4/svc-deploy/internal/config"
+	"github.com/a4/svc-deploy/internal/semver"
 	"github.com/a4/svc-deploy/internal/testutil"
 )
 
@@ -286,7 +287,7 @@ func TestCompareVersions_SemverOrdering(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := compareVersions(tt.v1, tt.v2)
+			result := semver.Compare(tt.v1, tt.v2)
 			if tt.expected > 0 && result <= 0 {
 				t.Errorf("compareVersions(%q, %q) = %d, want > 0", tt.v1, tt.v2, result)
 			}
@@ -328,7 +329,7 @@ func TestCompareVersions_InvalidVersions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := compareVersions(tt.v1, tt.v2)
+			result := semver.Compare(tt.v1, tt.v2)
 			if tt.expected > 0 && result <= 0 {
 				t.Errorf("compareVersions(%q, %q) = %d, want > 0", tt.v1, tt.v2, result)
 			}
@@ -342,53 +343,30 @@ func TestCompareVersions_InvalidVersions(t *testing.T) {
 	}
 }
 
-func TestParseSemver(t *testing.T) {
+func TestSemverPackageOrdering(t *testing.T) {
+	// Test that verifies the semver package is used correctly
 	tests := []struct {
-		input    string
-		expectOK bool
-		major    int
-		minor    int
-		patch    int
-		rest     string
+		v1       string
+		v2       string
+		expected int
 	}{
-		// Valid versions
-		{"v1.2.3", true, 1, 2, 3, ""},
-		{"1.2.3", true, 1, 2, 3, ""},
-		{"V1.2.3", true, 1, 2, 3, ""},
-		{"v2.0.0", true, 2, 0, 0, ""},
-		{"v0.0.1", true, 0, 0, 1, ""},
-		{"v1.2.3-rc1", true, 1, 2, 3, "-rc1"},
-		{"v1.2.3-alpha.1", true, 1, 2, 3, "-alpha.1"},
-
-		// Two-component versions
-		{"v1.2", true, 1, 2, 0, ""},
-		{"1.2", true, 1, 2, 0, ""},
-
-		// Invalid versions
-		{"", false, 0, 0, 0, ""},
-		{"v1", false, 0, 0, 0, ""},
-		{"v1.2.3.4", false, 0, 0, 0, ""},
-		{"abc", false, 0, 0, 0, ""},
-		{"latest", false, 0, 0, 0, ""},
-		{"v1.a.3", false, 0, 0, 0, ""},
+		{"v1.10.0", "v1.9.0", 1},
+		{"v1.9.0", "v1.10.0", -1},
+		{"v1.0.0", "v1.0.0", 0},
+		{"abc", "def", -1}, // invalid versions fall back to lexicographic
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			sv, ok := parseSemver(tt.input)
-			if ok != tt.expectOK {
-				t.Errorf("parseSemver(%q) ok = %v, want %v", tt.input, ok, tt.expectOK)
-				return
+		t.Run(tt.v1+"_vs_"+tt.v2, func(t *testing.T) {
+			result := semver.Compare(tt.v1, tt.v2)
+			if tt.expected > 0 && result <= 0 {
+				t.Errorf("semver.Compare(%q, %q) = %d, want > 0", tt.v1, tt.v2, result)
 			}
-			if !tt.expectOK {
-				return
+			if tt.expected < 0 && result >= 0 {
+				t.Errorf("semver.Compare(%q, %q) = %d, want < 0", tt.v1, tt.v2, result)
 			}
-			if sv.major != tt.major || sv.minor != tt.minor || sv.patch != tt.patch {
-				t.Errorf("parseSemver(%q) = {%d,%d,%d}, want {%d,%d,%d}",
-					tt.input, sv.major, sv.minor, sv.patch, tt.major, tt.minor, tt.patch)
-			}
-			if sv.rest != tt.rest {
-				t.Errorf("parseSemver(%q).rest = %q, want %q", tt.input, sv.rest, tt.rest)
+			if tt.expected == 0 && result != 0 {
+				t.Errorf("semver.Compare(%q, %q) = %d, want 0", tt.v1, tt.v2, result)
 			}
 		})
 	}

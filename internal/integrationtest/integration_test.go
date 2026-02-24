@@ -26,6 +26,9 @@ import (
 // - Real HTTPArtifactFetcher
 // - Real RealFS for extraction
 // - Mock service manager (systemd not available in tests)
+//
+// NOTE: This is a component test that validates the integration of fetch+extract.
+// For a true end-to-end success test, see TestEndToEndDeploySuccess.
 func TestFullDeployFlow(t *testing.T) {
 	ctx := context.Background()
 
@@ -116,13 +119,121 @@ func TestFullDeployFlow(t *testing.T) {
 	op := deploy.New(svcCfg, "svc-test", "v1.0.0", deps)
 	result, err := op.Run(ctx)
 
-	// The deploy may fail due to mock limitations, but we verify the fetcher worked
-	// In a real integration test with full mock stack, this would succeed
+	// This test verifies the fetch+extract integration works.
+	// Full success assertion is in TestEndToEndDeploySuccess.
 	if err != nil {
-		t.Logf("Deploy completed with error (expected in integration test): %v", err)
+		t.Logf("Deploy completed with error (expected in component test): %v", err)
 	} else {
 		t.Logf("Deploy succeeded: version=%s", result.Version)
 	}
+}
+
+// TestEndToEndDeploySuccess tests a complete successful deployment with full mock stack.
+// This test FAILS if deployment does not complete successfully (F5 fix).
+func TestEndToEndDeploySuccess(t *testing.T) {
+	ctx := context.Background()
+
+	// Use mock filesystem for controlled testing
+	fs := testutil.NewMockFS()
+	locker := testutil.NewMockLocker()
+	fetcher := testutil.NewMockArtifactFetcher()
+	svcMgr := testutil.NewMockServiceManager()
+	healthChecker := testutil.NewMockHealthChecker()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	configRepo := testutil.NewMockConfigRepo()
+	clock := testutil.NewMockClock(time.Now())
+
+	// Setup URLs
+	artifactURL := "http://example.com/v1.0.0/svc-e2e-v1.0.0.tar.gz"
+	checksumURL := artifactURL + ".sha256"
+
+	// Setup mock artifact
+	artifactContent := []byte("mock artifact content")
+	fetcher.AddArtifact(artifactURL, artifactContent, "abc123")
+
+	// Setup extraction callback to create expected files
+	fs.SetPostExtractCallback(func(dst string) {
+		fs.AddFile(filepath.Join(dst, "bin", "svc-e2e"), []byte("binary"))
+		fs.AddDir(filepath.Join(dst, "data"))
+	})
+
+	// Configure mocks for success
+	healthChecker.SetHealthy("http://localhost:8080/healthz", true)
+	svcMgr.SetRestartSuccess(true)
+
+	// Setup service directories
+	fs.AddDir("/opt/a4-services/svc-e2e")
+	fs.AddDir("/opt/a4-services/svc-e2e/releases")
+	fs.AddDir("/etc/a4-services")
+	fs.AddFile("/etc/a4-services/svc-e2e.env", []byte("SECRET=value\n"))
+
+	svcCfg := config.ServiceConfig{
+		ReleaseURLTemplate:       artifactURL,
+		ArtifactFilenameTemplate: "svc-e2e-{{.Version}}.tar.gz",
+		BinaryPath:               "bin/svc-e2e",
+		HealthCheckURL:           "http://localhost:8080/healthz",
+		SystemdUnit:              "svc-e2e.service",
+		DBFilename:               "",
+		StartupTimeout:           5,
+		KeepReleases:             5,
+		MinDiskSpace:             1024 * 1024, // 1MB
+	}
+
+	deps := deploy.Deps{
+		FS:            fs,
+		Fetcher:       fetcher,
+		Locker:        locker,
+		ServiceMgr:    svcMgr,
+		HealthChecker: healthChecker,
+		SymlinkMgr:    symlinkMgr,
+		ConfigRepo:    configRepo,
+		Clock:         clock,
+	}
+
+	op := deploy.New(svcCfg, "svc-e2e", "v1.0.0", deps)
+	result, err := op.Run(ctx)
+
+	// F5: This test FAILS if deployment does not succeed
+	if err != nil {
+		t.Fatalf("Deploy failed: %v", err)
+	}
+
+	if result.Version != "v1.0.0" {
+		t.Errorf("Version = %q, want v1.0.0", result.Version)
+	}
+
+	// Verify metadata was written
+	servicePath := "/opt/a4-services/svc-e2e"
+	releasePath := filepath.Join(servicePath, "releases", "v1.0.0")
+	metadataPath := filepath.Join(releasePath, "metadata", "release.json")
+
+	if !fs.Exists(metadataPath) {
+		t.Errorf("Metadata file not created at %s", metadataPath)
+	}
+
+	// Verify history was written
+	// History is stored in shared path: /opt/a4-services/<service>/shared/deploy-history.log
+	historyPath := filepath.Join(servicePath, "shared", "deploy-history.log")
+	if !fs.Exists(historyPath) {
+		t.Errorf("History file not created at %s", historyPath)
+	}
+
+	// Verify symlink was updated
+	current, err := symlinkMgr.GetCurrent(servicePath)
+	if err != nil {
+		t.Errorf("Failed to get current symlink: %v", err)
+	}
+	if current != "v1.0.0" {
+		t.Errorf("Current symlink = %q, want v1.0.0", current)
+	}
+
+	// Verify service was restarted
+	if !svcMgr.WasRestartCalled("svc-e2e.service") {
+		t.Error("Service restart was not called")
+	}
+
+	// Suppress unused variable warning - checksumURL is used for clarity
+	_ = checksumURL
 }
 
 // TestArtifactFetchAndVerify tests the real HTTP artifact fetcher with checksum verification.

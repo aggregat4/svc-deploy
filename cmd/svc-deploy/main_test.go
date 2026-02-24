@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,7 +50,7 @@ func TestParseGlobalFlags(t *testing.T) {
 			wantRemaining: []string{"status", "svc-a"},
 		},
 		{
-			name:          "flags after command",
+			name:          "global json flag after command is parsed",
 			args:          []string{"deploy", "svc-a", "v1.0.0", "--json"},
 			wantFlags:     cliFlags{jsonOutput: true},
 			wantRemaining: []string{"deploy", "svc-a", "v1.0.0"},
@@ -75,6 +76,31 @@ func TestParseGlobalFlags(t *testing.T) {
 			args:          []string{"--json", "--", "deploy", "--config", "value"},
 			wantFlags:     cliFlags{jsonOutput: true},
 			wantRemaining: []string{"deploy", "--config", "value"},
+		},
+		// F1 fix tests - prune --keep should not be rejected by global parser
+		{
+			name:          "prune with keep flag before command",
+			args:          []string{"--json", "prune", "svc-a", "--keep", "3"},
+			wantFlags:     cliFlags{jsonOutput: true},
+			wantRemaining: []string{"prune", "svc-a", "--keep", "3"},
+		},
+		{
+			name:          "prune with keep and global json after command",
+			args:          []string{"prune", "svc-a", "--keep", "3", "--json"},
+			wantFlags:     cliFlags{jsonOutput: true},
+			wantRemaining: []string{"prune", "svc-a", "--keep", "3"},
+		},
+		{
+			name:          "prune with keep flag -c before",
+			args:          []string{"-c", "/config.toml", "prune", "svc-a", "--keep", "3"},
+			wantFlags:     cliFlags{configPath: "/config.toml"},
+			wantRemaining: []string{"prune", "svc-a", "--keep", "3"},
+		},
+		{
+			name:          "prune with unknown flag should pass through",
+			args:          []string{"prune", "svc-a", "--unknown-flag"},
+			wantFlags:     cliFlags{},
+			wantRemaining: []string{"prune", "svc-a", "--unknown-flag"},
 		},
 	}
 
@@ -386,7 +412,113 @@ func TestCLI_JsonOutputShape(t *testing.T) {
 
 	// JSON errors go to stdout in our implementation
 	output := stdout.String()
-	if !strings.Contains(output, `"success"`) || !strings.Contains(output, `"error"`) {
-		t.Errorf("Expected JSON output with success and error fields, got: %s", output)
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
+		t.Fatalf("expected valid JSON output, got parse error: %v; output=%q", err, output)
+	}
+	if _, ok := parsed["success"]; !ok {
+		t.Errorf("expected success field in JSON output: %s", output)
+	}
+	if _, ok := parsed["error"]; !ok {
+		t.Errorf("expected error field in JSON output: %s", output)
+	}
+}
+
+// TestCLI_JsonOutputShape_FlagAfterCommand verifies trailing global --json still works.
+func TestCLI_JsonOutputShape_FlagAfterCommand(t *testing.T) {
+	// Create a temp config file so we can trigger service-not-found JSON output.
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "deploy-map.toml")
+	content := `[service.svc-a]
+release_url_template = "https://example.com/{{.Version}}"
+artifact_filename_template = "svc-a-{{.Version}}.tar.gz"
+binary_path = "bin/svc-a"
+healthcheck_url = "http://localhost:8080/healthz"
+systemd_unit = "svc-a.service"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to create test config: %v", err)
+	}
+
+	if os.Getenv("BE_CRASHER") == "1" {
+		configFlag := os.Getenv("TEST_CONFIG")
+		os.Args = []string{"svc-deploy", "-c", configFlag, "status", "missing-svc", "--json"}
+		main()
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestCLI_JsonOutputShape_FlagAfterCommand")
+	cmd.Env = append(os.Environ(), "BE_CRASHER=1", "TEST_CONFIG="+configPath)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err == nil {
+		t.Fatal("expected non-zero exit")
+	}
+
+	output := stdout.String()
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
+		t.Fatalf("expected valid JSON output for trailing --json, got: %v; output=%q", err, output)
+	}
+	if success, ok := parsed["success"].(bool); !ok || success {
+		t.Errorf("expected success=false in JSON output: %s", output)
+	}
+	if _, ok := parsed["error"]; !ok {
+		t.Errorf("expected error field in JSON output: %s", output)
+	}
+}
+
+func TestJSONStatusResponseIncludesActiveWhenFalse(t *testing.T) {
+	payload := jsonStatusResponse{
+		Success:         true,
+		Service:         "svc-a",
+		CurrentVersion:  "v1.0.0",
+		PreviousVersion: "v0.9.0",
+		Active:          false,
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("failed to marshal status response: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal status response: %v", err)
+	}
+
+	if _, ok := parsed["active"]; !ok {
+		t.Fatalf("expected active field in JSON: %s", string(data))
+	}
+	if active, ok := parsed["active"].(bool); !ok || active {
+		t.Fatalf("expected active=false in JSON: %s", string(data))
+	}
+}
+
+func TestJSONPruneResponseIncludesZeroCounts(t *testing.T) {
+	payload := jsonPruneResponse{
+		Success:   true,
+		Removed:   0,
+		Remaining: 0,
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("failed to marshal prune response: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal prune response: %v", err)
+	}
+
+	if _, ok := parsed["removed"]; !ok {
+		t.Fatalf("expected removed field in JSON: %s", string(data))
+	}
+	if _, ok := parsed["remaining"]; !ok {
+		t.Fatalf("expected remaining field in JSON: %s", string(data))
 	}
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/a4/svc-deploy/internal/config"
 	"github.com/a4/svc-deploy/internal/interfaces"
+	"github.com/a4/svc-deploy/internal/semver"
 )
 
 // Deps contains all external dependencies for deploy operations.
@@ -488,10 +489,9 @@ func (op *Operation) pruneOldReleases() error {
 		releases = append(releases, entry.Name)
 	}
 
-	// Sort by version (newest first using simple string compare for now)
-	// TODO: Use semantic versioning compare (R8)
+	// Sort by version (descending - newest first) using semantic versioning
 	sort.Slice(releases, func(i, j int) bool {
-		return releases[i] > releases[j]
+		return semver.Compare(releases[i], releases[j]) > 0
 	})
 
 	toKeep := op.cfg.KeepReleases

@@ -192,6 +192,19 @@ func TestExtractTar_SymlinkValidation(t *testing.T) {
 			linkTarget: "/etc/passwd",
 			expectErr:  true,
 		},
+		// F4 fix: Test nested symlink path that requires parent directory creation
+		{
+			name:       "nested_symlink_path",
+			linkPath:   "lib/current/link",
+			linkTarget: "../target",
+			expectErr:  false,
+		},
+		{
+			name:       "deeply_nested_symlink",
+			linkPath:   "a/b/c/d/link",
+			linkTarget: "../../target",
+			expectErr:  false,
+		},
 	}
 
 	for _, tt := range tests {

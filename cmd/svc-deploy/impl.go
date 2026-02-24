@@ -195,6 +195,10 @@ func (fs *RealFS) ExtractTar(r io.Reader, dst string) error {
 			if err := validateSymlinkTarget(dst, hdr.Name, hdr.Linkname); err != nil {
 				return fmt.Errorf("invalid symlink %q -> %q: %w", hdr.Name, hdr.Linkname, err)
 			}
+			// Ensure parent directories exist before creating symlink
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return fmt.Errorf("creating parent dir for symlink %q: %w", target, err)
+			}
 			if err := os.Symlink(hdr.Linkname, target); err != nil {
 				return fmt.Errorf("creating symlink %q: %w", target, err)
 			}

@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/a4/svc-deploy/internal/config"
@@ -28,51 +30,99 @@ type cliFlags struct {
 	showHelp   bool
 }
 
+type jsonErrorResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
+}
+
+type jsonDeployResponse struct {
+	Success         bool   `json:"success"`
+	Version         string `json:"version"`
+	PreviousVersion string `json:"previous_version"`
+}
+
+type jsonStatusResponse struct {
+	Success         bool   `json:"success"`
+	Service         string `json:"service"`
+	CurrentVersion  string `json:"current_version"`
+	PreviousVersion string `json:"previous_version"`
+	Active          bool   `json:"active"`
+}
+
+type jsonPruneResponse struct {
+	Success   bool `json:"success"`
+	Removed   int  `json:"removed"`
+	Remaining int  `json:"remaining"`
+}
+
+// writeJSON writes a JSON payload to stdout.
+func writeJSON(payload any) {
+	enc := json.NewEncoder(os.Stdout)
+	_ = enc.Encode(payload)
+}
+
 // parseGlobalFlags extracts global flags and returns remaining args.
-// It handles flags in any position before or after the command.
+// Global flags are supported before or after the command.
+// Unknown flags before the command are rejected; unknown flags after the
+// command are preserved for subcommand parsing.
 func parseGlobalFlags(args []string) (cliFlags, []string, error) {
 	var flags cliFlags
 	var remaining []string
+	commandSeen := false
+
+	isGlobalFlag := func(arg string) bool {
+		switch arg {
+		case "--config", "-c", "--json", "-j", "--version", "-v", "--help", "-h":
+			return true
+		default:
+			return false
+		}
+	}
 
 	i := 0
 	for i < len(args) {
 		arg := args[i]
 
-		switch arg {
-		case "--config", "-c":
-			if i+1 >= len(args) {
-				return flags, nil, fmt.Errorf("flag %s requires an argument", arg)
-			}
-			flags.configPath = args[i+1]
-			i += 2
-		case "--json", "-j":
-			flags.jsonOutput = true
-			i++
-		case "--version", "-v":
-			flags.showVer = true
-			i++
-		case "--help", "-h":
-			flags.showHelp = true
-			i++
-		case "--":
-			// End of flags, rest are positional
+		if arg == "--" {
 			remaining = append(remaining, args[i+1:]...)
-			return flags, remaining, nil
-		default:
-			if len(arg) > 0 && arg[0] == '-' {
-				return flags, nil, fmt.Errorf("unknown flag: %s", arg)
-			}
-			// Positional argument
-			remaining = append(remaining, arg)
-			i++
+			break
 		}
+
+		if isGlobalFlag(arg) {
+			switch arg {
+			case "--config", "-c":
+				if i+1 >= len(args) {
+					return flags, nil, fmt.Errorf("flag %s requires an argument", arg)
+				}
+				flags.configPath = args[i+1]
+				i += 2
+			case "--json", "-j":
+				flags.jsonOutput = true
+				i++
+			case "--version", "-v":
+				flags.showVer = true
+				i++
+			case "--help", "-h":
+				flags.showHelp = true
+				i++
+			}
+			continue
+		}
+
+		if strings.HasPrefix(arg, "-") && !commandSeen {
+			return flags, nil, fmt.Errorf("unknown flag: %s", arg)
+		}
+
+		commandSeen = true
+		remaining = append(remaining, arg)
+		i++
 	}
 
 	return flags, remaining, nil
 }
 
 func main() {
-	// Parse global flags from all args (before and after command)
+	// Parse global flags from args (supports before/after command)
 	flags, remaining, err := parseGlobalFlags(os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -108,7 +158,10 @@ func main() {
 	}
 	if err != nil {
 		if flags.jsonOutput {
-			fmt.Printf(`{"success":false,"error":"loading config: %s"}`+"\n", err)
+			writeJSON(jsonErrorResponse{
+				Success: false,
+				Error:   fmt.Sprintf("loading config: %v", err),
+			})
 		} else {
 			fmt.Fprintf(os.Stderr, "error: loading config: %v\n", err)
 		}
@@ -212,7 +265,10 @@ func runDeploy(ctx context.Context, cfg *config.DeployMap, service, version stri
 	svcCfg, ok := cfg.GetService(service)
 	if !ok {
 		if jsonOutput {
-			fmt.Printf(`{"success":false,"error":"service %q not found in deploy map"}\n`, service)
+			writeJSON(jsonErrorResponse{
+				Success: false,
+				Error:   fmt.Sprintf("service %q not found in deploy map", service),
+			})
 		} else {
 			fmt.Fprintf(os.Stderr, "error: service %q not found in deploy map\n", service)
 		}
@@ -224,9 +280,13 @@ func runDeploy(ctx context.Context, cfg *config.DeployMap, service, version stri
 
 	if jsonOutput {
 		if err != nil {
-			fmt.Printf(`{"success":false,"error":%q}\n`, err.Error())
+			writeJSON(jsonErrorResponse{Success: false, Error: err.Error()})
 		} else {
-			fmt.Printf(`{"success":true,"version":%q,"previous_version":%q}\n`, result.Version, result.PreviousVersion)
+			writeJSON(jsonDeployResponse{
+				Success:         true,
+				Version:         result.Version,
+				PreviousVersion: result.PreviousVersion,
+			})
 		}
 	} else {
 		if err != nil {
@@ -249,7 +309,10 @@ func runRollback(ctx context.Context, cfg *config.DeployMap, service, targetVers
 	svcCfg, ok := cfg.GetService(service)
 	if !ok {
 		if jsonOutput {
-			fmt.Printf(`{"success":false,"error":"service %q not found in deploy map"}\n`, service)
+			writeJSON(jsonErrorResponse{
+				Success: false,
+				Error:   fmt.Sprintf("service %q not found in deploy map", service),
+			})
 		} else {
 			fmt.Fprintf(os.Stderr, "error: service %q not found in deploy map\n", service)
 		}
@@ -261,9 +324,13 @@ func runRollback(ctx context.Context, cfg *config.DeployMap, service, targetVers
 
 	if jsonOutput {
 		if err != nil {
-			fmt.Printf(`{"success":false,"error":%q}\n`, err.Error())
+			writeJSON(jsonErrorResponse{Success: false, Error: err.Error()})
 		} else {
-			fmt.Printf(`{"success":true,"version":%q,"previous_version":%q}\n`, result.Version, result.PreviousVersion)
+			writeJSON(jsonDeployResponse{
+				Success:         true,
+				Version:         result.Version,
+				PreviousVersion: result.PreviousVersion,
+			})
 		}
 	} else {
 		if err != nil {
@@ -283,7 +350,10 @@ func runStatus(ctx context.Context, cfg *config.DeployMap, service string, deps 
 	svcCfg, ok := cfg.GetService(service)
 	if !ok {
 		if jsonOutput {
-			fmt.Printf(`{"success":false,"error":"service %q not found in deploy map"}\n`, service)
+			writeJSON(jsonErrorResponse{
+				Success: false,
+				Error:   fmt.Sprintf("service %q not found in deploy map", service),
+			})
 		} else {
 			fmt.Fprintf(os.Stderr, "error: service %q not found in deploy map\n", service)
 		}
@@ -295,10 +365,15 @@ func runStatus(ctx context.Context, cfg *config.DeployMap, service string, deps 
 
 	if jsonOutput {
 		if err != nil {
-			fmt.Printf(`{"success":false,"error":%q}\n`, err.Error())
+			writeJSON(jsonErrorResponse{Success: false, Error: err.Error()})
 		} else {
-			fmt.Printf(`{"success":true,"service":%q,"current_version":%q,"previous_version":%q,"active":%t}\n`,
-				service, result.CurrentVersion, result.PreviousVersion, result.Active)
+			writeJSON(jsonStatusResponse{
+				Success:         true,
+				Service:         service,
+				CurrentVersion:  result.CurrentVersion,
+				PreviousVersion: result.PreviousVersion,
+				Active:          result.Active,
+			})
 		}
 	} else {
 		if err != nil {
@@ -323,7 +398,10 @@ func runPrune(ctx context.Context, cfg *config.DeployMap, service string, keep i
 	svcCfg, ok := cfg.GetService(service)
 	if !ok {
 		if jsonOutput {
-			fmt.Printf(`{"success":false,"error":"service %q not found in deploy map"}\n`, service)
+			writeJSON(jsonErrorResponse{
+				Success: false,
+				Error:   fmt.Sprintf("service %q not found in deploy map", service),
+			})
 		} else {
 			fmt.Fprintf(os.Stderr, "error: service %q not found in deploy map\n", service)
 		}
@@ -339,9 +417,13 @@ func runPrune(ctx context.Context, cfg *config.DeployMap, service string, keep i
 
 	if jsonOutput {
 		if err != nil {
-			fmt.Printf(`{"success":false,"error":%q}\n`, err.Error())
+			writeJSON(jsonErrorResponse{Success: false, Error: err.Error()})
 		} else {
-			fmt.Printf(`{"success":true,"removed":%d,"remaining":%d}\n`, len(result.Removed), result.Remaining)
+			writeJSON(jsonPruneResponse{
+				Success:   true,
+				Removed:   len(result.Removed),
+				Remaining: result.Remaining,
+			})
 		}
 	} else {
 		if err != nil {

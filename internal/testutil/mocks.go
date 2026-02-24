@@ -428,6 +428,29 @@ func (m *MockServiceManager) GetRestarts() []string {
 	return append([]string{}, m.restarts...)
 }
 
+// WasRestartCalled returns true if the given unit was restarted.
+func (m *MockServiceManager) WasRestartCalled(unit string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, u := range m.restarts {
+		if u == unit {
+			return true
+		}
+	}
+	return false
+}
+
+// SetRestartSuccess configures the mock to succeed for restarts.
+func (m *MockServiceManager) SetRestartSuccess(success bool) {
+	// This method exists for API compatibility; actual behavior controlled by SetError
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if success {
+		// Clear any errors to allow success
+		m.errors = make(map[string]error)
+	}
+}
+
 // MockHealthChecker implements interfaces.HealthChecker for testing.
 type MockHealthChecker struct {
 	mu      sync.Mutex

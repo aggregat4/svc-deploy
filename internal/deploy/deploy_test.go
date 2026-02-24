@@ -452,6 +452,94 @@ func TestDeployPrunesOldReleases(t *testing.T) {
 	}
 }
 
+func TestDeployPrunesUsingSemverOrdering(t *testing.T) {
+	ctx := context.Background()
+
+	// Setup mocks
+	fs := testutil.NewMockFS()
+	fs.SetPostExtractCallback(func(dst string) {
+		binaryPath := dst + "/bin/svc-a"
+		fs.AddFile(binaryPath, []byte("binary"))
+		fs.AddDir(dst + "/data")
+	})
+	fetcher := testutil.NewMockArtifactFetcher()
+	locker := testutil.NewMockLocker()
+	svcMgr := testutil.NewMockServiceManager()
+	healthChecker := testutil.NewMockHealthChecker()
+	symlinkMgr := testutil.NewMockSymlinkManager()
+	configRepo := testutil.NewMockConfigRepo()
+	clock := testutil.NewMockClock(time.Now())
+
+	// Setup secrets file
+	fs.AddFile("/etc/a4-services/svc-a.env", []byte("SECRET=value"))
+
+	// Setup existing releases where lexicographic ordering differs from semver ordering.
+	fs.AddDir("/opt/a4-services/svc-a/releases")
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.8.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.8.0/bin/svc-a", []byte("old binary"))
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.9.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.9.0/bin/svc-a", []byte("old binary"))
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.10.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.10.0/bin/svc-a", []byte("old binary"))
+	fs.AddDir("/opt/a4-services/svc-a/releases/v1.11.0")
+	fs.AddFile("/opt/a4-services/svc-a/releases/v1.11.0/bin/svc-a", []byte("old binary"))
+
+	// Current is v1.11.0 before deploy.
+	symlinkMgr.SetCurrentDirect("/opt/a4-services/svc-a", "/opt/a4-services/svc-a/releases/v1.11.0")
+	// pruneOldReleases reads protected versions from FS symlinks directly, so set
+	// them explicitly to the post-deploy protected values for deterministic behavior.
+	fs.AddSymlink("/opt/a4-services/svc-a/current", "/opt/a4-services/svc-a/releases/v1.12.0")
+	fs.AddSymlink("/opt/a4-services/svc-a/previous", "/opt/a4-services/svc-a/releases/v1.11.0")
+
+	svcCfg := config.ServiceConfig{
+		ReleaseURLTemplate:       "https://github.com/org/svc-a/releases/download/{{.Version}}/{{.Artifact}}",
+		ArtifactFilenameTemplate: "{{.Service}}-{{.Version}}.tar.gz",
+		BinaryPath:               "bin/svc-a",
+		HealthCheckURL:           "http://127.0.0.1:8080/healthz",
+		SystemdUnit:              "svc-a.service",
+		DBFilename:               "svc-a.db",
+		StartupTimeout:           30,
+		KeepReleases:             1, // Keep only one non-protected release.
+	}
+
+	fetcher.AddArtifact(
+		"https://github.com/org/svc-a/releases/download/v1.12.0/svc-a-v1.12.0.tar.gz",
+		[]byte("new tarball"),
+		"sha256hash",
+	)
+
+	healthChecker.SetHealthy("http://127.0.0.1:8080/healthz", true)
+
+	deps := Deps{
+		FS:            fs,
+		Fetcher:       fetcher,
+		Locker:        locker,
+		ServiceMgr:    svcMgr,
+		HealthChecker: healthChecker,
+		SymlinkMgr:    symlinkMgr,
+		ConfigRepo:    configRepo,
+		Clock:         clock,
+	}
+
+	op := New(svcCfg, "svc-a", "v1.12.0", deps)
+	_, err := op.Run(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Protected after deploy: v1.12.0 (current), v1.11.0 (previous).
+	// Remaining candidates: v1.10.0, v1.9.0, v1.8.0. KeepReleases=1 should keep v1.10.0.
+	if !fs.Exists("/opt/a4-services/svc-a/releases/v1.10.0") {
+		t.Error("v1.10.0 should be kept as newest semver candidate")
+	}
+	if fs.Exists("/opt/a4-services/svc-a/releases/v1.9.0") {
+		t.Error("v1.9.0 should be pruned when KeepReleases=1")
+	}
+	if fs.Exists("/opt/a4-services/svc-a/releases/v1.8.0") {
+		t.Error("v1.8.0 should be pruned when KeepReleases=1")
+	}
+}
+
 func TestDeployWritesRuntimeConfigToSharedPath(t *testing.T) {
 	ctx := context.Background()
 
