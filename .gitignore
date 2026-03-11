@@ -39,6 +39,8 @@ go.work.sum
 dist/
 build/
 bin/
+.tools/
+.cache/
 
 # Local test data that shouldn't be committed
 testdata/local/
