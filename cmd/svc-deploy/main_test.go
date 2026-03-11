@@ -149,6 +149,7 @@ func TestParseGlobalFlags(t *testing.T) {
 // TestCLI_Version tests the --version flag works without config.
 func TestCLI_Version(t *testing.T) {
 	if os.Getenv("BE_CRASHER") == "1" {
+		version = "test-version"
 		os.Args = []string{"svc-deploy", "--version"}
 		main()
 		return
@@ -177,8 +178,8 @@ func TestCLI_Version(t *testing.T) {
 	if !strings.Contains(output, "svc-deploy") {
 		t.Errorf("Expected output to contain 'svc-deploy', got: %s", output)
 	}
-	if !strings.Contains(output, "0.1.0") {
-		t.Errorf("Expected output to contain version '0.1.0', got: %s", output)
+	if !strings.Contains(output, "test-version") {
+		t.Errorf("Expected output to contain version 'test-version', got: %s", output)
 	}
 }
 
@@ -211,6 +212,66 @@ func TestCLI_Help(t *testing.T) {
 	output := stdout.String()
 	if !strings.Contains(output, "Usage:") {
 		t.Errorf("Expected output to contain 'Usage:', got: %s", output)
+	}
+	if !strings.Contains(output, "manual") {
+		t.Errorf("Expected output to mention 'manual', got: %s", output)
+	}
+}
+
+func TestCLI_Manual(t *testing.T) {
+	if os.Getenv("BE_CRASHER") == "1" {
+		os.Args = []string{"svc-deploy", "manual"}
+		main()
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestCLI_Manual")
+	cmd.Env = append(os.Environ(), "BE_CRASHER=1")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("Expected exit code 0, got %d with stderr %q", exitErr.ExitCode(), stderr.String())
+		}
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "# svc-deploy Manual") {
+		t.Fatalf("Expected embedded manual header, got: %s", output)
+	}
+	if !strings.Contains(output, "deploy <service> <version>") {
+		t.Fatalf("Expected deploy usage in manual, got: %s", output)
+	}
+}
+
+func TestCLI_HelpManual(t *testing.T) {
+	if os.Getenv("BE_CRASHER") == "1" {
+		os.Args = []string{"svc-deploy", "help", "manual"}
+		main()
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestCLI_HelpManual")
+	cmd.Env = append(os.Environ(), "BE_CRASHER=1")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("Expected exit code 0, got %d with stderr %q", exitErr.ExitCode(), stderr.String())
+		}
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "# svc-deploy Manual") {
+		t.Fatalf("Expected embedded manual header, got: %s", output)
 	}
 }
 

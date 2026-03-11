@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,7 +16,10 @@ import (
 	"github.com/a4/svc-deploy/internal/status"
 )
 
-const version = "0.1.0"
+var version = "dev"
+
+//go:embed manual.md
+var embeddedManual string
 
 type realClock struct{}
 
@@ -148,6 +152,16 @@ func main() {
 
 	cmd := remaining[0]
 	cmdArgs := remaining[1:]
+
+	if cmd == "manual" {
+		printManual()
+		os.Exit(0)
+	}
+
+	if cmd == "help" && len(cmdArgs) > 0 && cmdArgs[0] == "manual" {
+		printManual()
+		os.Exit(0)
+	}
 
 	// Load configuration (not needed for help, already handled above)
 	var cfg *config.DeployMap
@@ -459,11 +473,17 @@ Commands:
   rollback <service> [version]   Rollback to previous or specific version
   status <service>               Show service status
   prune <service> [--keep N]     Clean up old releases
+  manual                         Show the embedded operator manual
 
 Examples:
   svc-deploy deploy svc-a v1.2.3
   svc-deploy rollback svc-a
-  svc-deploy status svc-a --json`)
+  svc-deploy status svc-a --json
+  svc-deploy manual`)
+}
+
+func printManual() {
+	fmt.Print(embeddedManual)
 }
 
 func parseInt(s string) int {
